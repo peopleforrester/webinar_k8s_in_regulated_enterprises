@@ -1,0 +1,49 @@
+# Documentation (internal reference only)
+docs/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Secrets
+secrets/
+*.pem
+*.key
+*.crt
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+
+# KubeHound data
+kubehound/data/
+
+# Session files
+*.session
+.session/
