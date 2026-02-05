@@ -8,7 +8,7 @@ docs/IMPLEMENTATION_SPEC.md
 *.tfvars
 !*.tfvars.example
 .terraform/
-.terraform.lock.hcl
+# Note: .terraform.lock.hcl is tracked for reproducible builds
 crash.log
 
 # Kubernetes

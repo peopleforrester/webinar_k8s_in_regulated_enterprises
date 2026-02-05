@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vulnerable App</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .warning { background: #fee; border: 2px solid #c00; padding: 20px; border-radius: 8px; }
+        h1 { color: #c00; }
+        ul { line-height: 1.8; }
+    </style>
+</head>
+<body>
+    <div class="warning">
+        <h1>Vulnerable Application</h1>
+        <p><strong>This application is intentionally insecure for demonstration purposes.</strong></p>
+        <p>Security violations in this deployment:</p>
+        <ul>
+            <li>Running as root user (UID 0)</li>
+            <li>Privileged container mode enabled</li>
+            <li>Using mutable :latest image tag</li>
+            <li>No resource limits defined</li>
+            <li>Writable root filesystem</li>
+            <li>Overpermissioned service account with cluster-wide secrets access</li>
+        </ul>
+        <p>This app will be blocked by Kyverno policies after they are applied.</p>
+    </div>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compliant App</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .success { background: #efe; border: 2px solid #0a0; padding: 20px; border-radius: 8px; }
+        h1 { color: #0a0; }
+        ul { line-height: 1.8; }
+    </style>
+</head>
+<body>
+    <div class="success">
+        <h1>Compliant Application</h1>
+        <p><strong>This application follows security best practices for regulated environments.</strong></p>
+        <p>Security controls implemented:</p>
+        <ul>
+            <li>Running as non-root user (UID 101)</li>
+            <li>Non-privileged container mode</li>
+            <li>Explicit image version tag (nginx:1.25.4)</li>
+            <li>CPU and memory limits defined</li>
+            <li>Read-only root filesystem with emptyDir volumes</li>
+            <li>All capabilities dropped</li>
+            <li>Seccomp profile: RuntimeDefault</li>
+            <li>Network policy restricting ingress/egress</li>
+            <li>Service account token not mounted</li>
+        </ul>
+        <p>This app passes all Kyverno policies and demonstrates regulatory compliance.</p>
+    </div>
+</body>
+</html>

@@ -62,6 +62,10 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   # Azure AD integration with RBAC
+  # Note: The 'managed' parameter is deprecated in azurerm v3.x and will be
+  # removed in v4.0 where it becomes the default. This is the recommended
+  # configuration for AKS-managed Entra ID integration.
+  # See: https://aka.ms/aks/aad-legacy
   azure_active_directory_role_based_access_control {
     managed            = true
     azure_rbac_enabled = true
