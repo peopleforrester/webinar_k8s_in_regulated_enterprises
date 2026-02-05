@@ -1,0 +1,58 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-readonly-rootfs
+  annotations:
+    policies.kyverno.io/title: Require Read-Only Root Filesystem
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      A read-only root filesystem prevents attackers from writing
+      malicious binaries or modifying system files inside containers.
+      This policy requires readOnlyRootFilesystem to be set to true.
+      Applications needing writable directories should use emptyDir volumes.
+    compliance.regulated/ncua: "NCUA Supervisory Priority - Container Hardening"
+    compliance.regulated/osfi-b13: "OSFI B-13 Section 4.3 - System Hardening"
+    compliance.regulated/dora: "DORA Article 9(2) - Protection and Prevention"
+spec:
+  # Audit mode - many applications need writable /tmp
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-readonly-rootfs-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Root filesystem should be read-only. Regulatory guidance:
+          NCUA Container Hardening, OSFI B-13 Section 4.3,
+          DORA Article 9(2). Set securityContext.readOnlyRootFilesystem
+          to true and use emptyDir volumes for writable directories.
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+    - name: require-readonly-rootfs-init-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
+            operator: GreaterThanOrEquals
+            value: 1
+      validate:
+        message: >-
+          Init containers should have a read-only root filesystem.
+        pattern:
+          spec:
+            initContainers:
+              - securityContext:
+                  readOnlyRootFilesystem: true

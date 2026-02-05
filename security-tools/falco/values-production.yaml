@@ -1,0 +1,54 @@
+# Falco Production Helm Chart Values
+# Overrides for production deployments with stricter settings
+
+# Use modern_ebpf driver for production stability
+driver:
+  kind: modern_ebpf
+
+# Falco configuration
+falco:
+  grpc:
+    enabled: true
+    bind_address: "unix:///run/falco/falco.sock"
+    threadiness: 8
+  grpc_output:
+    enabled: true
+
+  # JSON output for SIEM integration
+  json_output: true
+  json_include_output_property: true
+  json_include_tags_property: true
+
+  # Production log level
+  log_level: warning
+
+  # Stricter syscall event drop handling
+  syscall_event_drops:
+    threshold: 0.01
+    actions:
+      - log
+      - alert
+      - exit
+
+# Production-grade resource limits
+resources:
+  requests:
+    cpu: 500m
+    memory: 1024Mi
+  limits:
+    cpu: 2000m
+    memory: 2048Mi
+
+# Priority class for production
+priorityClassName: system-node-critical
+
+# Tolerations to run on all nodes
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
+# Prometheus metrics
+serviceMonitor:
+  enabled: true

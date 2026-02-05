@@ -1,0 +1,54 @@
+# Falcosidekick Helm Chart Values
+# Version: 2.30.x (February 2026)
+
+# Enable the Falcosidekick UI
+webui:
+  enabled: true
+  replicas: 1
+  redis:
+    storageEnabled: false
+
+# Configuration for output destinations
+config:
+  # Minimum priority to forward
+  customfields: "environment:demo,cluster:aks-regulated-demo"
+  mutualtlsfilespath: ""
+
+  # Slack output (configure your webhook URL)
+  slack:
+    webhookurl: ""
+    outputformat: "all"
+    minimumpriority: "warning"
+
+  # Azure Event Hub (for SIEM integration)
+  azure:
+    eventHub:
+      namespace: ""
+      name: ""
+      minimumpriority: "warning"
+
+  # Elasticsearch output
+  elasticsearch:
+    hostport: ""
+    index: "falco-alerts"
+    type: "_doc"
+    minimumpriority: "notice"
+
+  # Webhook for custom integrations
+  webhook:
+    address: ""
+    minimumpriority: "warning"
+    mutualtls: false
+
+# Resources
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Prometheus metrics
+serviceMonitor:
+  enabled: true

@@ -1,0 +1,49 @@
+# KubeHound Docker Compose Configuration
+# Runs KubeHound with JanusGraph backend for attack path analysis
+
+services:
+  kubehound:
+    image: ghcr.io/datadog/kubehound:v1.5
+    container_name: kubehound
+    environment:
+      - KUBEHOUND_STORAGE_PROVIDER=janusgraph
+      - KUBEHOUND_GRAPH_PROVIDER=janusgraph
+    volumes:
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+      - ./queries:/queries:ro
+    depends_on:
+      janusgraph:
+        condition: service_healthy
+    networks:
+      - kubehound
+
+  janusgraph:
+    image: janusgraph/janusgraph:1.0
+    container_name: kubehound-janusgraph
+    ports:
+      - "8182:8182"
+    environment:
+      - janusgraph.storage.backend=inmemory
+    healthcheck:
+      test: ["CMD", "bin/gremlin.sh", "-e", "scripts/empty-sample.groovy"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+    networks:
+      - kubehound
+
+  # Graph visualization UI
+  graphexp:
+    image: bricaud/graphexp:latest
+    container_name: kubehound-graphexp
+    ports:
+      - "8183:80"
+    depends_on:
+      janusgraph:
+        condition: service_healthy
+    networks:
+      - kubehound
+
+networks:
+  kubehound:
+    driver: bridge

@@ -1,0 +1,63 @@
+# Kyverno Helm Chart Values
+# Version: 1.16.x (February 2026)
+
+# Admission controller settings
+admissionController:
+  replicas: 3
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Background controller for scanning existing resources
+backgroundController:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Cleanup controller
+cleanupController:
+  replicas: 1
+
+# Reports controller
+reportsController:
+  replicas: 1
+
+# Global settings
+config:
+  # Exclude system namespaces from policies
+  excludeGroups:
+    - system:serviceaccounts:kube-system
+    - system:serviceaccounts:kyverno
+
+  # Webhook configuration
+  webhooks:
+    - objectSelector:
+        matchExpressions:
+          - key: "app.kubernetes.io/managed-by"
+            operator: NotIn
+            values:
+              - Helm
+
+# Enable policy reports
+features:
+  policyReports:
+    enabled: true
+
+# Metrics
+metricsConfig:
+  metricsRefreshInterval: 30s
+
+# Service Monitor for Prometheus
+serviceMonitor:
+  enabled: true

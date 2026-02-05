@@ -1,0 +1,61 @@
+# Trivy Operator Helm Chart Values
+# Version: 0.31.x (February 2026)
+
+# Operator configuration
+operator:
+  # Scan all namespaces
+  scanJobTimeout: 5m
+  # Concurrent scan limit
+  concurrentScanJobsLimit: 10
+  # Scan only workloads in specific namespaces (empty = all)
+  targetNamespaces: ""
+
+# Trivy scanner configuration
+trivy:
+  # Severity levels to report
+  severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+
+  # Ignore unfixed vulnerabilities in reports
+  ignoreUnfixed: false
+
+  # Timeout for each scan
+  timeout: 5m0s
+
+  # Resource limits for scan jobs
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100M
+    limits:
+      cpu: 500m
+      memory: 500M
+
+# Enable SBOM generation for supply chain compliance
+sbomGeneration:
+  enabled: true
+
+# Enable vulnerability scanning
+vulnerabilityReportsScanner: Trivy
+
+# Enable config audit scanning
+configAuditScannerEnabled: true
+
+# Enable exposed secret scanning
+exposedSecretScannerEnabled: true
+
+# Compliance reporting
+compliance:
+  # CIS Kubernetes Benchmark
+  specs:
+    - k8s-cis-1.23
+    - k8s-nsa-1.0
+
+# Service Monitor for Prometheus
+serviceMonitor:
+  enabled: true
+
+# Node collector for infrastructure scanning
+nodeCollector:
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists

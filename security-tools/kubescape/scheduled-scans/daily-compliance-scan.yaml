@@ -1,0 +1,50 @@
+# Kubescape Scheduled Compliance Scan
+# Runs daily at 2 AM UTC to generate compliance evidence
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-compliance-scan
+  namespace: kubescape
+  labels:
+    app: kubescape-compliance
+    environment: demo
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: kubescape-scanner
+          restartPolicy: OnFailure
+          containers:
+            - name: kubescape-scan
+              image: quay.io/kubescape/kubescape:v3.0
+              command:
+                - kubescape
+              args:
+                - scan
+                - framework
+                - nsa,mitre,soc2
+                - --enable-host-scan
+                - --format
+                - json
+                - --output
+                - /reports/daily-scan.json
+                - --logger
+                - pretty
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: 1000m
+                  memory: 512Mi
+              volumeMounts:
+                - name: reports
+                  mountPath: /reports
+          volumes:
+            - name: reports
+              emptyDir: {}

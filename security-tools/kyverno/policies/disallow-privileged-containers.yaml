@@ -1,0 +1,58 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged Containers
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Privileged containers can access all host devices and bypass most
+      security controls. This policy blocks privileged containers in
+      compliance with financial services regulatory requirements.
+    # Regulatory compliance mapping
+    compliance.regulated/ncua: "NCUA Supervisory Priority - Cybersecurity Controls"
+    compliance.regulated/osfi-b13: "OSFI B-13 Section 4.3 - Access Controls"
+    compliance.regulated/dora: "DORA Article 9 - ICT Risk Management"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Privileged containers are not allowed. Regulatory requirement:
+          NCUA Cybersecurity Controls, OSFI B-13 Section 4.3,
+          DORA Article 9. Container '{{request.object.metadata.name}}'
+          in pod requested privileged mode.
+        pattern:
+          spec:
+            containers:
+              - =(securityContext):
+                  =(privileged): false
+    - name: deny-privileged-init-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
+            operator: GreaterThanOrEquals
+            value: 1
+      validate:
+        message: >-
+          Privileged init containers are not allowed. Container
+          '{{request.object.metadata.name}}' in pod requested privileged mode.
+        pattern:
+          spec:
+            initContainers:
+              - =(securityContext):
+                  =(privileged): false

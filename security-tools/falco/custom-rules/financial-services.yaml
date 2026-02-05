@@ -1,0 +1,163 @@
+# Financial Services Custom Rules for Falco
+# These rules detect behaviors specific to regulated financial environments
+
+# Rule: Detect access to files with financial data patterns
+- rule: Access Financial Data Files
+  desc: Detect when processes access files containing potential financial data
+  condition: >
+    open_read and
+    container and
+    (fd.name contains "account" or
+     fd.name contains "credit" or
+     fd.name contains "routing" or
+     fd.name contains "ssn" or
+     fd.name contains "card" or
+     fd.name contains "transaction" or
+     fd.name icontains "pii" or
+     fd.name icontains "pci")
+  output: >
+    Financial data file accessed
+    (user=%user.name user_uid=%user.uid command=%proc.cmdline
+     file=%fd.name container_id=%container.id
+     container_name=%container.name pod=%k8s.pod.name
+     namespace=%k8s.ns.name)
+  priority: WARNING
+  tags: [financial, compliance, data-access, pci-dss, dora]
+
+# Rule: Detect Kubernetes secrets access from container
+- rule: Container Accessing K8s Secrets
+  desc: Detect container processes accessing Kubernetes secrets via API
+  condition: >
+    container and
+    (proc.name = "curl" or proc.name = "wget" or proc.name = "python" or proc.name = "node") and
+    (proc.cmdline contains "/api/v1/secrets" or
+     proc.cmdline contains "/api/v1/namespaces" and proc.cmdline contains "secrets")
+  output: >
+    Kubernetes secrets API accessed from container
+    (user=%user.name command=%proc.cmdline container_id=%container.id
+     container_name=%container.name pod=%k8s.pod.name
+     namespace=%k8s.ns.name)
+  priority: CRITICAL
+  tags: [kubernetes, secrets, credential-theft, mitre-t1552.007]
+
+# Rule: Detect service account token reads
+- rule: Read Service Account Token
+  desc: Detect processes reading Kubernetes service account tokens
+  condition: >
+    open_read and
+    container and
+    fd.name startswith "/var/run/secrets/kubernetes.io/serviceaccount"
+  output: >
+    Service account token read
+    (user=%user.name command=%proc.cmdline file=%fd.name
+     container_id=%container.id pod=%k8s.pod.name
+     namespace=%k8s.ns.name)
+  priority: WARNING
+  tags: [kubernetes, credentials, mitre-t1552.001]
+
+# Rule: Detect crypto mining indicators
+- rule: Detect Crypto Mining Process
+  desc: Detect processes that may be crypto miners
+  condition: >
+    spawned_process and
+    container and
+    (proc.name in (xmrig, minerd, minergate, cpuminer, cgminer, bfgminer) or
+     proc.cmdline contains "stratum+tcp" or
+     proc.cmdline contains "pool." or
+     proc.cmdline contains "nicehash" or
+     proc.cmdline contains "cryptonight")
+  output: >
+    Possible crypto mining activity detected
+    (user=%user.name command=%proc.cmdline container_id=%container.id
+     pod=%k8s.pod.name namespace=%k8s.ns.name)
+  priority: CRITICAL
+  tags: [cryptomining, resource-abuse, mitre-t1496]
+
+# Rule: Detect outbound connections to suspicious ports
+- rule: Outbound Connection to Non-Standard Port
+  desc: Detect containers making outbound connections to non-standard ports
+  condition: >
+    outbound and
+    container and
+    fd.l4proto = tcp and
+    not fd.rport in (80, 443, 8080, 8443, 53, 5432, 3306, 6379, 27017, 9200)
+  output: >
+    Outbound connection to non-standard port
+    (user=%user.name command=%proc.cmdline connection=%fd.name
+     container_id=%container.id pod=%k8s.pod.name
+     namespace=%k8s.ns.name)
+  priority: WARNING
+  tags: [network, exfiltration, mitre-t1041]
+
+# Rule: Detect privilege escalation attempts
+- rule: Container Privilege Escalation
+  desc: Detect attempts to escalate privileges within a container
+  condition: >
+    container and
+    (spawned_process and proc.name in (sudo, su, doas)) or
+    (open_write and fd.name startswith "/etc/sudoers") or
+    (open_write and fd.name = "/etc/passwd") or
+    (open_write and fd.name = "/etc/shadow")
+  output: >
+    Privilege escalation attempt detected
+    (user=%user.name command=%proc.cmdline container_id=%container.id
+     pod=%k8s.pod.name namespace=%k8s.ns.name)
+  priority: CRITICAL
+  tags: [privilege-escalation, mitre-t1548]
+
+# Rule: Detect shell spawned in container
+- rule: Terminal Shell in Container
+  desc: Detect interactive shells spawned in containers
+  condition: >
+    spawned_process and
+    container and
+    proc.tty != 0 and
+    proc.name in (bash, sh, zsh, csh, tcsh, dash, ash)
+  output: >
+    Terminal shell spawned in container
+    (user=%user.name shell=%proc.name parent=%proc.pname
+     container_id=%container.id pod=%k8s.pod.name
+     namespace=%k8s.ns.name cmdline=%proc.cmdline)
+  priority: NOTICE
+  tags: [shell, mitre-t1059]
+
+# Rule: Detect kubectl exec into pod
+- rule: Kubectl Exec Detected
+  desc: Detect kubectl exec sessions into pods
+  condition: >
+    spawned_process and
+    container and
+    proc.pname = "runc" and
+    proc.cmdline contains "exec"
+  output: >
+    Kubectl exec session detected
+    (user=%user.name command=%proc.cmdline container_id=%container.id
+     pod=%k8s.pod.name namespace=%k8s.ns.name)
+  priority: WARNING
+  tags: [exec, interactive, mitre-t1609]
+
+# Rule: Detect database credential file access
+- rule: Database Credential File Access
+  desc: Detect access to files that may contain database credentials
+  condition: >
+    open_read and
+    container and
+    (fd.name contains ".pgpass" or
+     fd.name contains ".my.cnf" or
+     fd.name contains "pg_hba.conf" or
+     fd.name contains "database.yml" or
+     fd.name contains "db.properties" or
+     fd.name icontains "connectionstring")
+  output: >
+    Database credential file accessed
+    (user=%user.name command=%proc.cmdline file=%fd.name
+     container_id=%container.id pod=%k8s.pod.name
+     namespace=%k8s.ns.name)
+  priority: WARNING
+  tags: [credentials, database, mitre-t1552.001]
+
+# Macro for financial compliance logging
+- macro: financial_compliance_log
+  condition: >
+    container and
+    k8s.ns.name in (production, finance, payments, accounts, pci)

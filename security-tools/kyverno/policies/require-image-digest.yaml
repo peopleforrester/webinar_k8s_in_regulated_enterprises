@@ -1,0 +1,54 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    policies.kyverno.io/title: Require Image Digest
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Image tags are mutable and can be overwritten. Requiring image
+      digests ensures the exact image binary is deployed, providing
+      supply chain integrity required for regulated environments.
+    compliance.regulated/ncua: "NCUA Supervisory Priority - Supply Chain Risk"
+    compliance.regulated/osfi-b13: "OSFI B-10 Section 4.1 - Third Party Risk"
+    compliance.regulated/dora: "DORA Article 28 - ICT Third-Party Risk"
+spec:
+  # Audit mode - stretch goal policy
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-digest-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Images should use a SHA256 digest for supply chain integrity.
+          Regulatory guidance: NCUA Supply Chain Risk, OSFI B-10,
+          DORA Article 28. Use format: image@sha256:abc123...
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+    - name: require-digest-init-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
+            operator: GreaterThanOrEquals
+            value: 1
+      validate:
+        message: >-
+          Init container images should use a SHA256 digest.
+        pattern:
+          spec:
+            initContainers:
+              - image: "*@sha256:*"

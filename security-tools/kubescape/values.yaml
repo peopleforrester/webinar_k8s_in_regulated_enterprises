@@ -1,0 +1,62 @@
+# Kubescape Operator Helm Chart Values
+# Version: 3.x (February 2026)
+
+# Cluster name for identification
+clusterName: aks-regulated-demo
+
+# Enable continuous scanning
+capabilities:
+  continuousScan: enable
+  vulnerabilityScan: enable
+  configurationScan: enable
+  nodeScan: enable
+  networkPolicyService: enable
+  runtimeObservability: enable
+
+# Scanner configuration
+scanner:
+  # Scan schedule (daily at 2 AM)
+  schedule: "0 2 * * *"
+
+  # Frameworks to scan
+  frameworks:
+    - NSA
+    - MITRE
+    - SOC2
+    - CIS-Kubernetes
+
+  # Severity threshold for alerts
+  severityThreshold: medium
+
+# Resource configuration
+resources:
+  scanner:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  operator:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Storage for scan results
+storage:
+  enabled: true
+  # Retain scan results for 90 days
+  retentionPeriod: 90d
+
+# Service Monitor for Prometheus
+serviceMonitor:
+  enabled: true
+
+# Node agent tolerations
+nodeAgent:
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
