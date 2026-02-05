@@ -1,6 +1,6 @@
 # Kubescape Operator Helm Chart Values
-# Version: 3.0.45 (February 2026)
-# Kubescape is now CNCF Incubating (January 2025)
+# Version: 4.0.0 (February 2026)
+# Kubescape is CNCF Incubating (January 2025)
 
 # Cluster name for identification
 clusterName: aks-regulated-demo
