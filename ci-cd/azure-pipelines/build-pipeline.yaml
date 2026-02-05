@@ -1,0 +1,62 @@
+# Azure DevOps Build Pipeline Template
+# Builds container images and pushes to Azure Container Registry
+trigger:
+  branches:
+    include:
+      - main
+      - staging
+  paths:
+    include:
+      - demo-workloads/**
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: aks-credentials
+  - group: acr-credentials
+  - name: imageRepository
+    value: "demo-app"
+  - name: dockerfilePath
+    value: "demo-workloads/compliant-app/Dockerfile"
+
+stages:
+  - stage: Build
+    displayName: "Build and Push"
+    jobs:
+      - job: BuildImage
+        displayName: "Build Container Image"
+        steps:
+          - task: Docker@2
+            displayName: "Build image"
+            inputs:
+              containerRegistry: "$(acrServiceConnection)"
+              repository: "$(imageRepository)"
+              command: "build"
+              Dockerfile: "$(dockerfilePath)"
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+
+          - task: Docker@2
+            displayName: "Push image"
+            inputs:
+              containerRegistry: "$(acrServiceConnection)"
+              repository: "$(imageRepository)"
+              command: "push"
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+
+  - stage: Scan
+    displayName: "Security Scan"
+    dependsOn: Build
+    jobs:
+      - job: TrivyScan
+        displayName: "Trivy Vulnerability Scan"
+        steps:
+          - script: |
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+              trivy image --exit-code 1 --severity CRITICAL \
+                $(acrLoginServer)/$(imageRepository):$(Build.BuildId)
+            displayName: "Run Trivy scan"

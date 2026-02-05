@@ -1,0 +1,85 @@
+# Azure DevOps Security Scan Pipeline Template
+# Runs comprehensive security scanning on container images and manifests
+trigger: none
+
+schedules:
+  - cron: "0 6 * * *"
+    displayName: "Daily security scan"
+    branches:
+      include:
+        - main
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: aks-credentials
+  - group: acr-credentials
+
+stages:
+  - stage: ImageScan
+    displayName: "Image Vulnerability Scan"
+    jobs:
+      - job: TrivyScan
+        displayName: "Trivy Image Scan"
+        steps:
+          - script: |
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            displayName: "Install Trivy"
+
+          - script: |
+              trivy image --format table --exit-code 0 \
+                --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+                $(acrLoginServer)/demo-app:latest
+            displayName: "Scan container image"
+
+          - script: |
+              trivy image --format json --output trivy-results.json \
+                $(acrLoginServer)/demo-app:latest
+            displayName: "Generate scan report"
+
+          - publish: trivy-results.json
+            artifact: trivy-scan-results
+            displayName: "Publish scan results"
+
+  - stage: ManifestScan
+    displayName: "Kubernetes Manifest Scan"
+    jobs:
+      - job: KubeScapeScan
+        displayName: "Kubescape Manifest Scan"
+        steps:
+          - script: |
+              curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | /bin/bash
+            displayName: "Install Kubescape"
+
+          - script: |
+              kubescape scan framework nsa \
+                --include-namespaces vulnerable-app,compliant-app \
+                --format junit --output kubescape-results.xml \
+                demo-workloads/
+            displayName: "Run Kubescape scan"
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: "JUnit"
+              testResultsFiles: "kubescape-results.xml"
+            displayName: "Publish Kubescape results"
+
+  - stage: SBOMGeneration
+    displayName: "SBOM Generation"
+    jobs:
+      - job: GenerateSBOM
+        displayName: "Generate Software Bill of Materials"
+        steps:
+          - script: |
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            displayName: "Install Trivy"
+
+          - script: |
+              trivy image --format spdx-json --output sbom.spdx.json \
+                $(acrLoginServer)/demo-app:latest
+            displayName: "Generate SPDX SBOM"
+
+          - publish: sbom.spdx.json
+            artifact: sbom
+            displayName: "Publish SBOM"

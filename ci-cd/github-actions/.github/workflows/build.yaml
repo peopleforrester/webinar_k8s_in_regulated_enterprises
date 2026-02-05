@@ -1,0 +1,37 @@
+# GitHub Actions Build Workflow Template
+name: Build and Push
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - "demo-workloads/**"
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: demo-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build image
+        run: |
+          docker build -t ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -f demo-workloads/compliant-app/Dockerfile \
+            demo-workloads/compliant-app/
+
+      - name: Push image
+        if: github.event_name == 'push'
+        run: |
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}

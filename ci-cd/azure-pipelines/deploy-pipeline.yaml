@@ -1,0 +1,69 @@
+# Azure DevOps Deploy Pipeline Template
+# Deploys to AKS with Kyverno policy pre-validation
+trigger: none
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: aks-credentials
+  - name: aksCluster
+    value: "aks-regulated-demo"
+  - name: aksResourceGroup
+    value: "rg-aks-regulated-demo"
+
+stages:
+  - stage: Validate
+    displayName: "Pre-Deploy Validation"
+    jobs:
+      - job: PolicyCheck
+        displayName: "Kyverno Policy Check"
+        steps:
+          - script: |
+              # Install Kyverno CLI
+              curl -sLO https://github.com/kyverno/kyverno/releases/latest/download/kyverno-cli_linux_amd64.tar.gz
+              tar -xzf kyverno-cli_linux_amd64.tar.gz
+              chmod +x kyverno
+              mv kyverno /usr/local/bin/
+            displayName: "Install Kyverno CLI"
+
+          - script: |
+              kyverno apply security-tools/kyverno/policies/ \
+                --resource demo-workloads/compliant-app/deployment.yaml
+            displayName: "Validate against Kyverno policies"
+
+          - script: |
+              kubectl apply --dry-run=client -f demo-workloads/compliant-app/
+            displayName: "Kubernetes dry-run validation"
+
+  - stage: Deploy
+    displayName: "Deploy to AKS"
+    dependsOn: Validate
+    jobs:
+      - deployment: DeployToAKS
+        displayName: "Deploy Application"
+        environment: "aks-regulated-demo"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: "Get AKS credentials"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      az aks get-credentials \
+                        --resource-group $(aksResourceGroup) \
+                        --name $(aksCluster)
+
+                - script: |
+                    kubectl apply -f demo-workloads/compliant-app/namespace.yaml
+                    kubectl apply -f demo-workloads/compliant-app/
+                  displayName: "Apply Kubernetes manifests"
+
+                - script: |
+                    kubectl rollout status deployment/compliant-app \
+                      -n compliant-app --timeout=120s
+                  displayName: "Verify deployment rollout"

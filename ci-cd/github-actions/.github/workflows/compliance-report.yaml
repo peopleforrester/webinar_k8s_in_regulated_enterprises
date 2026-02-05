@@ -1,0 +1,80 @@
+# GitHub Actions Compliance Report Workflow Template
+name: Weekly Compliance Report
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Every Monday 8AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compliance-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+
+      - name: Install scanning tools
+        run: |
+          # Install Kubescape
+          curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | /bin/bash
+          # Install Trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run NSA compliance scan
+        run: |
+          kubescape scan framework nsa --enable-host-scan \
+            --format json --output nsa-report.json || true
+
+      - name: Run SOC2 compliance scan
+        run: |
+          kubescape scan framework soc2 \
+            --format json --output soc2-report.json || true
+
+      - name: Run vulnerability scan
+        run: |
+          trivy k8s --report summary \
+            --format json --output vuln-report.json || true
+
+      - name: Generate SBOM
+        run: |
+          trivy image --format spdx-json --output sbom.spdx.json \
+            nginx:1.25.4 || true
+
+      - name: Upload compliance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-reports-${{ github.run_number }}
+          path: |
+            nsa-report.json
+            soc2-report.json
+            vuln-report.json
+            sbom.spdx.json
+          retention-days: 90
+
+      - name: Create compliance summary issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const date = new Date().toISOString().split('T')[0];
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Weekly Compliance Report - ${date}`,
+              body: `## Compliance Report Generated\n\nDate: ${date}\nRun: #${context.runNumber}\n\nArtifacts available in this workflow run.\n\n### Scans Completed\n- NSA Hardening Framework\n- SOC2 Compliance\n- Vulnerability Assessment\n- SBOM Generation`,
+              labels: ['compliance', 'automated']
+            });

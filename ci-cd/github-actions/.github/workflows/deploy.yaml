@@ -1,0 +1,54 @@
+# GitHub Actions Deploy Workflow Template
+name: Deploy to AKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kubernetes dry-run validation
+        run: kubectl apply --dry-run=client -f demo-workloads/compliant-app/
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+
+      - name: Deploy application
+        run: |
+          kubectl apply -f demo-workloads/compliant-app/namespace.yaml
+          kubectl apply -f demo-workloads/compliant-app/
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/compliant-app \
+            -n compliant-app --timeout=120s
