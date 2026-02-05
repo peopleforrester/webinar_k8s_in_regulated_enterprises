@@ -1,0 +1,22 @@
+# Copy this file to terraform.tfvars and update with your values
+
+resource_group_name = "rg-aks-regulated-demo"
+location            = "eastus2"
+cluster_name        = "aks-regulated-demo"
+kubernetes_version  = "1.29"
+
+system_node_count   = 3
+system_node_vm_size = "Standard_D4s_v3"
+
+user_node_count     = 3
+user_node_vm_size   = "Standard_D4s_v3"
+
+enable_defender     = true
+log_retention_days  = 90
+
+tags = {
+  Environment = "Demo"
+  Project     = "AKS-Regulated-Enterprise"
+  ManagedBy   = "Terraform"
+  Owner       = "your-email@example.com"
+}
