@@ -1,11 +1,11 @@
 # Falco Helm Chart Values
-# Version: 0.42.x (February 2026)
+# Version: 0.43.0 (February 2026)
+# Note: Falco 0.43.0 deprecates legacy eBPF probe, gVisor engine, and gRPC.
+# Use modern_ebpf for production deployments.
 
-# Use eBPF driver for better performance and compatibility
+# Modern eBPF driver - recommended for production
 driver:
-  kind: ebpf
-  ebpf:
-    hostNetwork: true
+  kind: modern_ebpf
 
 # Falco configuration
 falco:

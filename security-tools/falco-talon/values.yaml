@@ -1,0 +1,68 @@
+# Falco Talon Helm Chart Values
+# Version: 0.3.0 (February 2026)
+# Automated threat response for Falco detections
+# https://github.com/falcosecurity/falco-talon
+
+# Talon configuration
+config:
+  # Watch interval for Falco events
+  watchRules: true
+
+  # Default action when no rule matches
+  defaultAction: log
+
+  # Notifiers for alerting on actions taken
+  notifiers:
+    - name: slack
+      enabled: false
+    - name: webhook
+      enabled: true
+      url: ""
+
+# Falco connection settings
+falco:
+  # Connect via gRPC socket
+  grpcSocket: "unix:///run/falco/falco.sock"
+
+# Response rules are loaded from ConfigMap
+# See response-rules.yaml for rule definitions
+
+# Resource configuration
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Run as non-root
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+
+# Service account for Kubernetes actions
+serviceAccount:
+  create: true
+  name: falco-talon
+  annotations: {}
+
+# RBAC for automated response actions
+rbac:
+  create: true
+  # Permissions needed for response actions
+  rules:
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "delete", "patch"]
+    - apiGroups: [""]
+      resources: ["pods/exec"]
+      verbs: ["create"]
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["networkpolicies"]
+      verbs: ["get", "list", "create", "patch"]
+
+# Prometheus metrics
+serviceMonitor:
+  enabled: true

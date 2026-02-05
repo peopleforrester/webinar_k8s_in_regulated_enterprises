@@ -1,5 +1,6 @@
 # Kyverno Helm Chart Values
-# Version: 1.16.x (February 2026)
+# Version: 1.17.0 (February 2026)
+# Features: ValidatingAdmissionPolicy (VAP) auto-generation for API server-level policy execution
 
 # Admission controller settings
 admissionController:
@@ -53,6 +54,21 @@ config:
 features:
   policyReports:
     enabled: true
+  # Enable ValidatingAdmissionPolicy auto-generation (Kyverno 1.17.0+)
+  # This allows policies to execute at the API server level for improved
+  # performance and reduced webhook overhead. GA targeted for 1.18.
+  validatingAdmissionPolicyReports:
+    enabled: true
+
+# Auto-generation settings
+autogen:
+  # Generate ValidatingAdmissionPolicy from ClusterPolicy
+  # Policies execute at API server level, eliminating webhook latency
+  validatingAdmissionPolicy:
+    enabled: true
+
+# Use server-side apply for policy updates
+useServerSideApply: true
 
 # Metrics
 metricsConfig:

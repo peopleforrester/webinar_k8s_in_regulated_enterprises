@@ -1,13 +1,17 @@
 # KubeHound Docker Compose Configuration
+# Version: 1.6.7 (February 2026)
 # Runs KubeHound with JanusGraph backend for attack path analysis
+# New in 1.6.7: MITRE ATT&CK framework binding, improved DSL, KHaaS support
 
 services:
   kubehound:
-    image: ghcr.io/datadog/kubehound:v1.5
+    image: ghcr.io/datadog/kubehound:v1.6.7
     container_name: kubehound
     environment:
       - KUBEHOUND_STORAGE_PROVIDER=janusgraph
       - KUBEHOUND_GRAPH_PROVIDER=janusgraph
+      # Enable MITRE ATT&CK mapping for attack paths
+      - KUBEHOUND_MITRE_MAPPING=true
     volumes:
       - ${HOME}/.kube/config:/root/.kube/config:ro
       - ./queries:/queries:ro

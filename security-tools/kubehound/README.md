@@ -1,8 +1,16 @@
 # KubeHound Configuration
 
+**Version**: 1.6.7 (February 2026)
+
 KubeHound maps Kubernetes attack paths using graph analysis. It ingests
 cluster state and builds an attack graph showing how an attacker could
 escalate privileges.
+
+## New in v1.6.7
+
+- **MITRE ATT&CK Framework Binding**: Each attack path is mapped to MITRE techniques
+- **Improved KubeHound DSL**: More expressive query language for attack paths
+- **KubeHound as a Service (KHaaS)**: Distributed deployment support
 
 ## Prerequisites
 

@@ -1,5 +1,6 @@
 # Kubescape Operator Helm Chart Values
-# Version: 3.x (February 2026)
+# Version: 3.0.45 (February 2026)
+# Kubescape is now CNCF Incubating (January 2025)
 
 # Cluster name for identification
 clusterName: aks-regulated-demo
@@ -19,11 +20,13 @@ scanner:
   schedule: "0 2 * * *"
 
   # Frameworks to scan
+  # CIS-v1.12.0 aligns with Kubernetes 1.30/1.31 and includes upgraded
+  # cryptographic standards required for financial services
   frameworks:
     - NSA
     - MITRE
     - SOC2
-    - CIS-Kubernetes
+    - CIS-v1.12.0
 
   # Severity threshold for alerts
   severityThreshold: medium

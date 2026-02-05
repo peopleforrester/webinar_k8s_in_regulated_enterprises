@@ -1,4 +1,5 @@
 # Falco Production Helm Chart Values
+# Version: 0.43.0 (February 2026)
 # Overrides for production deployments with stricter settings
 
 # Use modern_ebpf driver for production stability

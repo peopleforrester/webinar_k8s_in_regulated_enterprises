@@ -1,0 +1,120 @@
+# Falco Talon Response Rules
+# Automated threat response actions for financial services environments
+# These rules define actions to take when Falco detects specific threats
+
+# Rule: Isolate pod on crypto mining detection
+- name: isolate-cryptominer
+  match:
+    rules:
+      - Detect Crypto Mining Process
+    priority: critical
+  action:
+    name: kubernetes:networkpolicy
+    parameters:
+      # Create a deny-all network policy to isolate the pod
+      name: talon-isolate-{{.Pod}}
+      action: create
+      spec:
+        podSelector:
+          matchLabels:
+            app: "{{.Pod}}"
+        policyTypes:
+          - Ingress
+          - Egress
+  continue: true
+  notifiers:
+    - webhook
+
+# Rule: Label suspicious pods for investigation
+- name: label-suspicious-pod
+  match:
+    rules:
+      - Terminal Shell in Container
+      - Kubectl Exec Detected
+    priority: warning
+  action:
+    name: kubernetes:label
+    parameters:
+      labels:
+        security.falco.org/suspicious: "true"
+        security.falco.org/detected-at: "{{.Timestamp}}"
+        security.falco.org/rule: "{{.Rule}}"
+  continue: true
+
+# Rule: Terminate pod on privilege escalation
+- name: terminate-privesc
+  match:
+    rules:
+      - Container Privilege Escalation
+    priority: critical
+  action:
+    name: kubernetes:terminate
+    parameters:
+      gracePeriodSeconds: 0
+  continue: false
+  notifiers:
+    - webhook
+
+# Rule: Log and label credential access
+- name: log-credential-access
+  match:
+    rules:
+      - Read Service Account Token
+      - Container Accessing K8s Secrets
+      - Database Credential File Access
+    priority: warning
+  action:
+    name: kubernetes:label
+    parameters:
+      labels:
+        security.falco.org/credential-access: "true"
+        security.falco.org/requires-investigation: "true"
+  continue: true
+  notifiers:
+    - webhook
+
+# Rule: Isolate on data exfiltration indicators
+- name: isolate-exfiltration
+  match:
+    rules:
+      - Outbound Connection to Non-Standard Port
+      - Access Financial Data Files
+    priority: warning
+    outputFields:
+      k8s.ns.name:
+        - production
+        - finance
+        - payments
+        - pci
+  action:
+    name: kubernetes:networkpolicy
+    parameters:
+      name: talon-block-egress-{{.Pod}}
+      action: create
+      spec:
+        podSelector:
+          matchLabels:
+            app: "{{.Pod}}"
+        policyTypes:
+          - Egress
+        egress: []
+  continue: true
+  notifiers:
+    - webhook
+
+# Rule: Capture forensic data before termination
+- name: capture-forensics
+  match:
+    rules:
+      - Detect Crypto Mining Process
+      - Container Privilege Escalation
+    priority: critical
+  action:
+    name: kubernetes:script
+    parameters:
+      script: |
+        # Capture process list
+        ps aux > /tmp/forensics-{{.Pod}}.txt
+        # Capture network connections
+        netstat -tulpn >> /tmp/forensics-{{.Pod}}.txt
+  continue: true

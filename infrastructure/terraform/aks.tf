@@ -36,6 +36,7 @@ resource "azurerm_kubernetes_cluster" "main" {
     vnet_subnet_id      = azurerm_subnet.aks.id
     os_disk_size_gb     = 128
     os_disk_type        = "Managed"
+    os_sku              = "AzureLinux"
     type                = "VirtualMachineScaleSets"
     enable_auto_scaling = false
 
@@ -51,14 +52,19 @@ resource "azurerm_kubernetes_cluster" "main" {
     tags = var.tags
   }
 
-  # Network configuration - Azure CNI for network policies
+  # Network configuration - Azure CNI Overlay with Cilium
+  # Note: Azure NPM is retiring (Windows Sep 2026, Linux Sep 2028).
+  # Cilium is Microsoft's recommended network policy engine, providing
+  # eBPF-based L7 policy support and removing NPM's 250-node limitation.
   network_profile {
-    network_plugin    = "azure"
-    network_policy    = "azure"
-    load_balancer_sku = "standard"
-    outbound_type     = "loadBalancer"
-    service_cidr      = "10.1.0.0/16"
-    dns_service_ip    = "10.1.0.10"
+    network_plugin      = "azure"
+    network_plugin_mode = "overlay"
+    network_data_plane  = "cilium"
+    load_balancer_sku   = "standard"
+    outbound_type       = "loadBalancer"
+    service_cidr        = "10.1.0.0/16"
+    dns_service_ip      = "10.1.0.10"
+    pod_cidr            = "192.168.0.0/16"
   }
 
   # Azure AD integration with RBAC
@@ -97,8 +103,15 @@ resource "azurerm_kubernetes_cluster" "main" {
   # Enable Azure Policy
   azure_policy_enabled = true
 
-  # Auto-upgrade channel
-  automatic_channel_upgrade = "patch"
+  # Image Cleaner (GA) - removes vulnerable/unused images
+  # Based on Eraser project, uses Trivy for vulnerability scanning
+  image_cleaner_enabled        = true
+  image_cleaner_interval_hours = 168
+
+  # Auto-upgrade channels
+  # "stable" is required for AKS Automatic compatibility
+  automatic_channel_upgrade = "stable"
+  node_os_upgrade_channel   = "SecurityPatch"
 
   # Maintenance window
   maintenance_window {
@@ -128,6 +141,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "user" {
   vnet_subnet_id        = azurerm_subnet.aks.id
   os_disk_size_gb       = 128
   os_disk_type          = "Managed"
+  os_sku                = "AzureLinux"
   enable_auto_scaling   = true
   min_count             = 2
   max_count             = 10
