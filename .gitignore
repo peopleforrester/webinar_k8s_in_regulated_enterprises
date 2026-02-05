@@ -45,6 +45,11 @@ dist/
 build/
 *.tar.gz
 
+# Language-specific
+node_modules/
+__pycache__/
+*.pyc
+
 # KubeHound data
 kubehound/data/
 
