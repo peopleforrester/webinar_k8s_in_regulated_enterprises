@@ -1,5 +1,6 @@
-# Documentation (internal reference only)
-docs/
+# Internal specification docs (PROJECT_BRIEF and IMPLEMENTATION_SPEC are reference only)
+docs/PROJECT_BRIEF.md
+docs/IMPLEMENTATION_SPEC.md
 
 # Terraform
 *.tfstate
