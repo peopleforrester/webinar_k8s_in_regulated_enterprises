@@ -2,6 +2,9 @@
 docs/PROJECT_BRIEF.md
 docs/IMPLEMENTATION_SPEC.md
 
+# Code review artifacts
+SENIOR_DEV_REVIEW.md
+
 # Terraform
 *.tfstate
 *.tfstate.*
