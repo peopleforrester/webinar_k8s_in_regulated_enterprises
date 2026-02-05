@@ -1,0 +1,41 @@
+# Intentionally insecure deployment - violates all Kyverno policies
+# Used for demonstrating security controls
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulnerable-app
+  namespace: vulnerable-app
+  labels:
+    app: vulnerable-app
+    environment: demo
+    security-posture: vulnerable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vulnerable-app
+  template:
+    metadata:
+      labels:
+        app: vulnerable-app
+        security-posture: vulnerable
+    spec:
+      serviceAccountName: vulnerable-sa
+      # No securityContext at pod level
+      containers:
+        - name: nginx
+          # VIOLATION: Using :latest tag (disallow-latest-tag)
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          # VIOLATION: No resource limits (require-resource-limits)
+          # resources: <missing>
+          securityContext:
+            # VIOLATION: Privileged container (disallow-privileged-containers)
+            privileged: true
+            # VIOLATION: Running as root (require-run-as-nonroot)
+            runAsNonRoot: false
+            runAsUser: 0
+            # VIOLATION: Writable root filesystem (require-readonly-rootfs)
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: true

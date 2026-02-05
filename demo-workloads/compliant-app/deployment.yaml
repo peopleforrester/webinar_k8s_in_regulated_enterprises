@@ -1,0 +1,85 @@
+# Hardened deployment - passes all Kyverno policies
+# Reference implementation for regulated environments
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliant-app
+  namespace: compliant-app
+  labels:
+    app: compliant-app
+    environment: demo
+    security-posture: compliant
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliant-app
+  template:
+    metadata:
+      labels:
+        app: compliant-app
+        security-posture: compliant
+    spec:
+      serviceAccountName: compliant-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          # Explicit version tag (passes disallow-latest-tag)
+          image: nginx:1.25.4
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          # Resource limits set (passes require-resource-limits)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            # Non-privileged (passes disallow-privileged-containers)
+            privileged: false
+            # Non-root (passes require-run-as-nonroot)
+            runAsNonRoot: true
+            runAsUser: 101
+            # Read-only root filesystem (passes require-readonly-rootfs)
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          # Writable directories via emptyDir volumes
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /var/run
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
