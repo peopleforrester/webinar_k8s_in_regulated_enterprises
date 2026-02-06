@@ -6,13 +6,29 @@ Deploy a fully secured AKS cluster with the complete CNCF security stack in 15 m
 
 - Azure CLI installed and authenticated (`az login`)
 - Terraform >= 1.6.0
-- kubectl >= 1.29
+- kubectl >= 1.30
 - Helm >= 3.14
 - Docker (for KubeHound)
 
-## Step 1: Deploy AKS Cluster (5 minutes)
+## What Gets Deployed
+
+| Component | Version | Description |
+|-----------|---------|-------------|
+| AKS | Kubernetes 1.34 | With Cilium, AzureLinux, Image Cleaner |
+| Falco | 0.43.0 | Runtime detection (modern_ebpf) |
+| Falco Talon | 0.3.0 | Automated threat response |
+| Kyverno | 1.17.0 | Policy enforcement (VAP enabled) |
+| Kubescape | 4.0.0 | Compliance scanning (CIS-v1.12.0) |
+| Trivy | 0.29.0 | Vulnerability scanning |
+| KubeHound | 1.6.7 | Attack path analysis |
+
+## Step 1: Deploy AKS Cluster (5-10 minutes)
 
 ```bash
+# Use the setup script (recommended)
+./scripts/setup-cluster.sh
+
+# Or manually:
 cd infrastructure/terraform
 
 # Copy and edit variables
@@ -24,7 +40,7 @@ cp terraform.tfvars.example terraform.tfvars
 
 # Initialize and apply
 terraform init
-terraform apply -auto-approve
+terraform apply
 
 # Get credentials
 az aks get-credentials \
@@ -38,65 +54,122 @@ kubectl get nodes
 ## Step 2: Install Security Tools (5 minutes)
 
 ```bash
-cd ../../scripts
-chmod +x *.sh
-
-# Install all security tools
-./install-security-tools.sh
+./scripts/install-security-tools.sh
 
 # Verify installations
-kubectl get pods -n falco
-kubectl get pods -n kyverno
-kubectl get pods -n trivy-system
-kubectl get pods -n kubescape
+kubectl get pods -n falco          # Falco + Talon
+kubectl get pods -n kyverno        # Kyverno controllers
+kubectl get pods -n trivy-system   # Trivy Operator
+kubectl get pods -n kubescape      # Kubescape Operator
 ```
 
 ## Step 3: Deploy Demo Workloads (2 minutes)
 
 ```bash
-# Deploy the vulnerable application (before Kyverno policies)
-kubectl apply -f ../demo-workloads/vulnerable-app/namespace.yaml
-kubectl apply -f ../demo-workloads/vulnerable-app/
+# Deploy the vulnerable application (demonstrates policy violations)
+kubectl apply -f demo-workloads/vulnerable-app/namespace.yaml
+kubectl apply -f demo-workloads/vulnerable-app/
 
-# Deploy the compliant application
-kubectl apply -f ../demo-workloads/compliant-app/namespace.yaml
-kubectl apply -f ../demo-workloads/compliant-app/
+# Deploy the compliant application (passes all policies)
+kubectl apply -f demo-workloads/compliant-app/namespace.yaml
+kubectl apply -f demo-workloads/compliant-app/
 ```
 
-## Step 4: Run the Demo (3 minutes)
+## Step 4: Run the Demo
 
 ```bash
 # Run the interactive demo script
-./run-demo.sh
+./scripts/run-demo.sh
+```
 
-# Or run individual components:
-# - Attack simulation
-cd ../attack-simulation
+### Or run individual components:
+
+**Attack Simulation (SEE phase)**
+```bash
+cd attack-simulation
 ./01-reconnaissance.sh
+./02-credential-theft.sh
+./03-lateral-movement.sh
+```
 
-# - View Falco alerts
+**View Falco Alerts (DETECT phase)**
+```bash
 kubectl logs -n falco -l app.kubernetes.io/name=falco -f
+```
 
-# - Apply Kyverno policies and test
-kubectl apply -f ../security-tools/kyverno/policies/
-kubectl apply -f ../demo-workloads/vulnerable-app/deployment.yaml
-# (Should be rejected!)
+**Test Kyverno Policies (PREVENT phase)**
+```bash
+# Apply policies
+kubectl apply -f security-tools/kyverno/policies/
 
-# - Generate compliance report
-./generate-compliance-report.sh
+# Try to deploy vulnerable app (should be rejected!)
+kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
+# Error: Privileged containers are not allowed...
+```
+
+**Generate Compliance Report (PROVE phase)**
+```bash
+./scripts/generate-compliance-report.sh
 ```
 
 ## Step 5: Cleanup
 
 ```bash
-cd ../scripts
-./cleanup.sh
+# Remove workloads and tools (keep cluster)
+./scripts/cleanup.sh
 
-# Or destroy everything
-cd ../infrastructure/terraform
-terraform destroy -auto-approve
+# Or destroy everything including AKS
+cd infrastructure/terraform
+terraform destroy
+```
+
+## Key Demonstrations
+
+### 1. KubeHound Attack Paths
+```bash
+cd security-tools/kubehound
+docker compose up -d
+docker compose exec kubehound kubehound
+# Open http://localhost:8183 for graph visualization
+```
+
+### 2. Falco + Talon Automated Response
+```bash
+# Simulate attack
+kubectl exec -it -n vulnerable-app deploy/vulnerable-app -- sh -c "cat /var/run/secrets/kubernetes.io/serviceaccount/token"
+
+# Watch Falco detect it
+kubectl logs -n falco -l app.kubernetes.io/name=falco --tail=10
+
+# Talon automatically labels the pod for investigation
+kubectl get pods -n vulnerable-app --show-labels
+```
+
+### 3. Kyverno Policy Enforcement
+```bash
+# See which policies are active
+kubectl get clusterpolicies
+
+# Check policy reports
+kubectl get policyreport -A
+```
+
+### 4. Kubescape Compliance Scan
+```bash
+# Run on-demand scan
+kubescape scan framework nsa,cis-v1.12.0 --submit
+
+# View results
+kubectl get vulnerabilitymanifests -A
 ```
 
 ## Troubleshooting
 
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common issues and solutions.
+| Issue | Solution |
+|-------|----------|
+| Terraform fails on network | Ensure Cilium pod_cidr doesn't overlap with VNet |
+| Falco pods CrashLooping | Check node OS - requires AzureLinux or Ubuntu |
+| Kyverno blocking system pods | Namespace exclusions should be in place |
+| KubeHound can't connect | Ensure kubeconfig is valid: `kubectl get nodes` |
+
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for more solutions.

@@ -6,67 +6,136 @@
 
 This repository provides a complete, deployable example of securing Azure Kubernetes Service (AKS) for regulated financial services environments using CNCF open source tools.
 
-**The Security Stack:**
-- **KubeHound** - Attack path analysis and visualization
-- **Falco** - Runtime threat detection (CNCF Graduated)
-- **Kyverno** - Policy-as-code enforcement (CNCF Incubating)
-- **Trivy** - Vulnerability scanning and SBOM generation
-- **Kubescape** - Compliance posture management (CNCF Incubating)
+**Demo Narrative: Attack → Detect → Prevent → Prove**
+
+1. **SEE** - Visualize attack paths with KubeHound
+2. **DETECT** - Runtime threat detection with Falco + automated response with Talon
+3. **PREVENT** - Policy enforcement with Kyverno
+4. **PROVE** - Compliance validation with Kubescape
+
+## The Security Stack (February 2026)
+
+| Tool | Version | Purpose | Status |
+|------|---------|---------|--------|
+| **KubeHound** | 1.6.7 | Attack path analysis with MITRE ATT&CK mapping | Datadog OSS |
+| **Falco** | 0.43.0 | Runtime threat detection (modern_ebpf driver) | CNCF Graduated |
+| **Falco Talon** | 0.3.0 | Automated threat response | Falcosecurity |
+| **Kyverno** | 1.17.0 | Policy-as-code with ValidatingAdmissionPolicy | CNCF Incubating |
+| **Trivy** | 0.29.0 | Vulnerability scanning and SBOM generation | Aqua Security |
+| **Kubescape** | 4.0.0 | Compliance posture (NSA, SOC2, CIS-v1.12.0) | CNCF Incubating |
+
+## Infrastructure Configuration
+
+This demo deploys AKS with February 2026 best practices:
+
+| Setting | Configuration | Why |
+|---------|--------------|-----|
+| **Kubernetes** | 1.34 | Latest GA, LTS-eligible |
+| **Network Policy** | Cilium | Replaces retiring Azure NPM, eBPF-based L7 policies |
+| **Node OS** | AzureLinux | Azure Linux 2.0 retired Nov 2025 |
+| **Image Cleaner** | Enabled (7-day) | GA feature for vulnerability cleanup |
+| **Upgrade Channel** | stable | Required for AKS Automatic compatibility |
+| **Identity** | Workload Identity | Pod-Managed Identity deprecated Sep 2025 |
 
 ## Quick Start (15 minutes)
 
-See [QUICKSTART.md](QUICKSTART.md) for step-by-step deployment instructions.
+See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
 
 ```bash
 # Clone the repository
-git clone https://github.com/kodekloud/nfcu-aks-regulated-demo.git
-cd nfcu-aks-regulated-demo
+git clone https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+cd aks-for-regulated-enterprises
 
-# Deploy infrastructure (requires Azure CLI authenticated)
-cd infrastructure/terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
-terraform init && terraform apply
+# Deploy AKS cluster (~10 min)
+./scripts/setup-cluster.sh
 
-# Install security tools
-cd ../../scripts
-./install-security-tools.sh
+# Install security tools (~5 min)
+./scripts/install-security-tools.sh
+
+# Deploy demo workloads
+kubectl apply -f demo-workloads/vulnerable-app/
+kubectl apply -f demo-workloads/compliant-app/
 
 # Run the demo
-./run-demo.sh
+./scripts/run-demo.sh
 ```
 
 ## Regulatory Compliance Mapping
 
 This demo addresses requirements from:
-- **US**: NCUA supervisory priorities, FFIEC cloud guidance
-- **Canada**: OSFI B-10 (Third-Party Risk), B-13 (Cyber Risk), E-23 (Model Risk)
-- **EU**: DORA (Digital Operational Resilience Act), EU AI Act
+
+| Region | Regulation | Key Requirements |
+|--------|------------|------------------|
+| **US** | NCUA Supervisory Priorities | Cybersecurity controls, least privilege |
+| **US** | FFIEC Cloud Guidance | Third-party risk, access controls |
+| **Canada** | OSFI B-10, B-13, E-21 | Third-party risk, cyber risk, operational risk |
+| **EU** | DORA (effective Jan 2025) | 4-hour incident reporting, ICT risk management |
+| **EU** | EU AI Act | AI governance (Aug 2026) |
 
 See [docs/COMPLIANCE-MAPPING.md](docs/COMPLIANCE-MAPPING.md) for detailed control mappings.
 
 ## Repository Structure
 
 ```
-├── infrastructure/      # Terraform for AKS cluster
-├── security-tools/      # Helm values and configurations
-├── demo-workloads/      # Vulnerable and compliant example apps
-├── attack-simulation/   # Scripts to demonstrate attacks
-├── ci-cd/              # Pipeline templates
-├── scripts/            # Automation scripts
-└── docs/               # Documentation and diagrams
+├── infrastructure/          # Terraform for AKS (K8s 1.34, Cilium, AzureLinux)
+│   └── terraform/
+├── security-tools/          # Helm values and configurations
+│   ├── falco/              # Runtime detection (0.43.0, modern_ebpf)
+│   ├── falco-talon/        # Automated response (0.3.0)
+│   ├── falcosidekick/      # Alert routing
+│   ├── kyverno/            # Policy enforcement (1.17.0, VAP)
+│   ├── kubescape/          # Compliance scanning (4.0.0, CIS-v1.12.0)
+│   ├── trivy/              # Vulnerability scanning (0.29.0)
+│   └── kubehound/          # Attack path analysis (1.6.7)
+├── demo-workloads/          # Vulnerable and compliant example apps
+│   ├── vulnerable-app/     # Intentionally insecure for demo
+│   └── compliant-app/      # Passes all Kyverno policies
+├── attack-simulation/       # Scripts to demonstrate attacks (MITRE ATT&CK)
+├── ci-cd/                   # Pipeline templates (Azure DevOps, GitHub Actions)
+├── scripts/                 # Automation scripts
+└── docs/                    # Documentation and compliance mappings
 ```
 
-## Security Tools Versions (February 2026)
+## Key Features
 
-| Tool | Version | Helm Chart |
-|------|---------|------------|
-| Falco | 0.42.x | falcosecurity/falco |
-| Falcosidekick | 2.30.x | falcosecurity/falcosidekick |
-| Kyverno | 1.16.x | kyverno/kyverno |
-| Trivy Operator | 0.31.x | aqua/trivy-operator |
-| Kubescape | 3.x | kubescape/kubescape-operator |
-| KubeHound | 1.5.x | Manual deployment |
+### Falco 0.43.0 with Modern eBPF
+- Uses `modern_ebpf` driver (legacy eBPF deprecated)
+- Custom financial services rules with MITRE ATT&CK tagging
+- Integration with Falco Talon for automated response
+
+### Falco Talon 0.3.0 (NEW)
+- Automated threat response engine
+- Network policy injection for pod isolation
+- Pod labeling for forensic investigation
+- Configurable response rules per threat type
+
+### Kyverno 1.17.0 with VAP
+- ValidatingAdmissionPolicy auto-generation for API server-level execution
+- 6 policies (4 enforce, 2 audit) with regulatory annotations
+- Namespace exclusions for system components
+
+### Kubescape 4.0.0
+- CIS Kubernetes Benchmark v1.12.0 (aligned with K8s 1.30+)
+- NSA, MITRE, and SOC2 frameworks
+- Continuous scanning with compliance trending
+
+## Prerequisites
+
+```bash
+# Required tools
+az --version      # Azure CLI (logged in)
+terraform -v      # Terraform 1.5+
+kubectl version   # kubectl
+helm version      # Helm 3.x
+docker --version  # Docker (for building demo images)
+```
+
+## Cleanup
+
+```bash
+# Remove all resources
+./scripts/cleanup.sh
+```
 
 ## Webinar Recording
 
@@ -78,7 +147,7 @@ MIT License - See [LICENSE](LICENSE)
 
 ## Contributing
 
-This is a demonstration repository. For production implementations, please adapt the configurations to your specific requirements.
+This is a demonstration repository. For production implementations, adapt the configurations to your specific requirements and security policies.
 
 ## Contact
 
