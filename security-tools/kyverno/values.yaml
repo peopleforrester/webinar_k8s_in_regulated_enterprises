@@ -1,11 +1,114 @@
-# Kyverno Helm Chart Values
+# =============================================================================
+# KYVERNO HELM CHART VALUES
+# =============================================================================
+# Tool:    Kyverno - Kubernetes Native Policy Engine
 # Version: 1.17.0 (February 2026)
-# Features: ValidatingAdmissionPolicy (VAP) auto-generation for API server-level policy execution
+# Repo:    https://github.com/kyverno/kyverno
+# Docs:    https://kyverno.io/docs/
+#
+# PURPOSE:
+# Kyverno is a CNCF Incubating project that provides policy-as-code for
+# Kubernetes. Unlike OPA/Gatekeeper which uses Rego, Kyverno uses native
+# Kubernetes YAML syntax making policies accessible to all K8s users.
+#
+# CAPABILITIES:
+#   - VALIDATE: Block or warn on non-compliant resources
+#   - MUTATE:   Automatically modify resources (add labels, defaults, etc.)
+#   - GENERATE: Create related resources (NetworkPolicies, Secrets, etc.)
+#   - VERIFY:   Validate image signatures and attestations
+#
+# WHY KYVERNO FOR REGULATED INDUSTRIES?
+# 1. Policies are YAML - auditors can read them without learning Rego
+# 2. Generates PolicyReports (CRDs) for compliance dashboards
+# 3. Can enforce and audit existing resources (not just new ones)
+# 4. Supports ValidatingAdmissionPolicy (VAP) for API server-level execution
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Preventive controls for configuration management"
+#   - OSFI B-13: "Configuration standards enforced automatically"
+#   - DORA Article 9: "Protection against misconfigurations"
+#   - CIS Kubernetes: Many benchmarks implementable as Kyverno policies
+#
+# ARCHITECTURE (v1.17.0+):
+# +----------------+     +----------------+     +----------------+
+# | Admission      |     | Background     |     | Reports        |
+# | Controller     |     | Controller     |     | Controller     |
+# | (3 replicas)   |     | (2 replicas)   |     | (1 replica)    |
+# +-------+--------+     +-------+--------+     +-------+--------+
+#         |                      |                      |
+#         v                      v                      v
+#   Validates new          Scans existing        Aggregates
+#   resources at           resources for        PolicyReport
+#   admission              compliance           CRDs
+#
+# NEW IN 1.17.0:
+# - ValidatingAdmissionPolicy (VAP) auto-generation (Beta, GA in 1.18)
+# - Policies can execute at API server level, eliminating webhook latency
+# - Improved performance for large clusters
+# =============================================================================
 
-# Admission controller settings
+# -----------------------------------------------------------------------------
+# ADMISSION CONTROLLER
+# -----------------------------------------------------------------------------
+# The admission controller is Kyverno's core component that validates and
+# mutates resources at admission time (when kubectl apply is run).
+#
+# HOW IT WORKS:
+# 1. User runs kubectl apply
+# 2. API server sends AdmissionReview to Kyverno webhook
+# 3. Kyverno evaluates policies against the resource
+# 4. Kyverno returns Allow/Deny with optional mutations
+# 5. API server accepts or rejects the request
+#
+# REPLICAS:
+# Why 3 replicas?
+#   - Admission controllers are in the critical path for ALL cluster changes
+#   - Must survive node failures (PodDisruptionBudget should require 2+)
+#   - Load balancing across replicas improves performance
+#
+# PRODUCTION CONSIDERATIONS:
+#   - Never run with < 2 replicas in production
+#   - Consider 5+ replicas for very large clusters (>500 nodes)
+#   - Use anti-affinity to spread across nodes/zones
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "ICT systems shall be resilient" - 3 replicas with anti-affinity ensures
+# policy enforcement survives component failures.
+# -----------------------------------------------------------------------------
 admissionController:
   replicas: 3
 
+  # ---------------------------------------------------------------------------
+  # Resource Configuration
+  # ---------------------------------------------------------------------------
+  # Admission controller must be responsive - it's in the kubectl path.
+  #
+  # SIZING RATIONALE:
+  #   requests.cpu: 100m
+  #     - Baseline for policy evaluation
+  #     - Most policies evaluate in <10ms
+  #
+  #   requests.memory: 256Mi
+  #     - Holds policy cache and evaluation context
+  #     - More policies = more memory needed
+  #
+  #   limits.cpu: 500m
+  #     - Allows bursting for complex mutations
+  #     - Prevents runaway from impacting API server
+  #
+  #   limits.memory: 512Mi
+  #     - Headroom for large resource evaluations
+  #     - Complex generate policies need more memory
+  #
+  # MONITORING:
+  # Watch kyverno_admission_request_latency_milliseconds
+  # P99 should be <100ms; adjust resources if higher.
+  #
+  # IF ADMISSION IS SLOW:
+  # 1. Increase CPU limits
+  # 2. Review policy complexity (reduce nested rules)
+  # 3. Enable VAP auto-generation for simple policies
+  # ---------------------------------------------------------------------------
   resources:
     requests:
       cpu: 100m
@@ -14,10 +117,44 @@ admissionController:
       cpu: 500m
       memory: 512Mi
 
-# Background controller for scanning existing resources
+# -----------------------------------------------------------------------------
+# BACKGROUND CONTROLLER
+# -----------------------------------------------------------------------------
+# The background controller scans existing resources for policy compliance.
+# This is how Kyverno handles resources created BEFORE policies existed.
+#
+# WHY NEEDED?
+# Admission webhooks only see new/modified resources. Without background
+# scanning, existing non-compliant resources would never be detected.
+#
+# OPERATION:
+# 1. Periodically lists resources matching policy selectors
+# 2. Evaluates each resource against applicable policies
+# 3. Creates/updates PolicyReport CRDs with violations
+#
+# REPLICAS:
+# 2 replicas for high availability. Background scanning is not latency-
+# critical, but results feed compliance dashboards.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Continuous monitoring of security controls"
+# Background scanning ensures compliance is validated continuously,
+# not just at resource creation time.
+# -----------------------------------------------------------------------------
 backgroundController:
   replicas: 2
 
+  # ---------------------------------------------------------------------------
+  # Resource Configuration
+  # ---------------------------------------------------------------------------
+  # Background controller is not latency-critical but processes many
+  # resources. Size based on cluster resource count.
+  #
+  # SIZING GUIDANCE:
+  #   <1000 resources:  100m/128Mi baseline
+  #   1000-10000:       200m/256Mi
+  #   10000+:           500m/512Mi (consider horizontal scaling)
+  # ---------------------------------------------------------------------------
   resources:
     requests:
       cpu: 100m
@@ -26,22 +163,92 @@ backgroundController:
       cpu: 500m
       memory: 256Mi
 
-# Cleanup controller
+# -----------------------------------------------------------------------------
+# CLEANUP CONTROLLER
+# -----------------------------------------------------------------------------
+# Manages TTL-based cleanup of generated resources and policy reports.
+#
+# USE CASES:
+# - Cleanup old PolicyReports (prevent unbounded growth)
+# - Remove orphaned generated resources
+# - Enforce resource TTLs defined in generate policies
+#
+# REPLICAS:
+# Single replica is sufficient - cleanup is not critical path.
+# Kubernetes leader election ensures only one is active.
+# -----------------------------------------------------------------------------
 cleanupController:
   replicas: 1
 
-# Reports controller
+# -----------------------------------------------------------------------------
+# REPORTS CONTROLLER
+# -----------------------------------------------------------------------------
+# Aggregates individual policy results into ClusterPolicyReport CRDs.
+#
+# POLICY REPORTS:
+# PolicyReport and ClusterPolicyReport are standard Kubernetes CRDs
+# (part of Kubernetes Policy WG spec) that capture compliance status.
+#
+# DASHBOARD INTEGRATION:
+# Tools like Kyverno Policy Reporter, Grafana, and compliance platforms
+# read PolicyReports to visualize cluster compliance posture.
+#
+# REGULATORY CONTEXT (OSFI B-13):
+# "Evidence of security control effectiveness"
+# PolicyReports serve as auditable evidence of policy enforcement.
+# -----------------------------------------------------------------------------
 reportsController:
   replicas: 1
 
-# Global settings
+# -----------------------------------------------------------------------------
+# GLOBAL CONFIGURATION
+# -----------------------------------------------------------------------------
 config:
-  # Exclude system namespaces from policies
+  # ---------------------------------------------------------------------------
+  # Excluded Groups
+  # ---------------------------------------------------------------------------
+  # ServiceAccounts in these groups are exempt from policy enforcement.
+  #
+  # WHY EXCLUDE SYSTEM ACCOUNTS?
+  # 1. Prevent bootstrap chicken-egg problems
+  # 2. System components may legitimately violate policies
+  # 3. Reduces load from system operations
+  #
+  # DEFAULT EXCLUSIONS:
+  #   kube-system: Core Kubernetes components
+  #   kyverno: Kyverno itself (prevents self-lockout)
+  #
+  # SECURITY IMPLICATION:
+  # Excluded accounts can bypass ALL policies. Limit exclusions carefully.
+  #
+  # BEST PRACTICE:
+  # Instead of excluding entire namespaces, use policy-level exclusions
+  # for specific, documented exceptions.
+  # ---------------------------------------------------------------------------
   excludeGroups:
     - system:serviceaccounts:kube-system
     - system:serviceaccounts:kyverno
 
-  # Webhook configuration
+  # ---------------------------------------------------------------------------
+  # Webhook Configuration
+  # ---------------------------------------------------------------------------
+  # Fine-tune which resources trigger Kyverno webhooks.
+  #
+  # objectSelector:
+  #   Filters which objects are sent to Kyverno for evaluation.
+  #   Use to reduce webhook traffic for known-good resource types.
+  #
+  # CURRENT SETTING:
+  # Exclude Helm-managed resources from webhook (they're validated by Helm).
+  #
+  # CAUTION:
+  # This exclusion assumes Helm charts are trusted. Remove if you need
+  # to validate Helm-deployed resources.
+  #
+  # REGULATORY CONTEXT (DORA Article 9):
+  # All infrastructure changes should be validated. Consider removing
+  # this exclusion in strict regulatory environments.
+  # ---------------------------------------------------------------------------
   webhooks:
     - objectSelector:
         matchExpressions:
@@ -50,30 +257,159 @@ config:
             values:
               - Helm
 
-# Enable policy reports
+# -----------------------------------------------------------------------------
+# FEATURE FLAGS
+# -----------------------------------------------------------------------------
 features:
+  # ---------------------------------------------------------------------------
+  # Policy Reports
+  # ---------------------------------------------------------------------------
+  # Enable generation of PolicyReport CRDs for compliance visibility.
+  #
+  # WHAT ARE POLICY REPORTS?
+  # StandardKubernetes CRDs capturing policy evaluation results:
+  # - PolicyReport (namespace-scoped)
+  # - ClusterPolicyReport (cluster-scoped)
+  #
+  # Each report contains:
+  # - Policy name and version
+  # - Resource evaluated
+  # - Result (pass/fail/warn/error/skip)
+  # - Message explaining the result
+  #
+  # USAGE:
+  # kubectl get policyreport -A
+  # kubectl describe policyreport <name> -n <namespace>
+  #
+  # REGULATORY CONTEXT (NCUA Appendix B):
+  # "Maintain evidence of control effectiveness"
+  # PolicyReports are machine-readable compliance evidence.
+  # ---------------------------------------------------------------------------
   policyReports:
     enabled: true
-  # Enable ValidatingAdmissionPolicy auto-generation (Kyverno 1.17.0+)
-  # This allows policies to execute at the API server level for improved
-  # performance and reduced webhook overhead. GA targeted for 1.18.
+
+  # ---------------------------------------------------------------------------
+  # ValidatingAdmissionPolicy Reports (NEW in 1.17.0)
+  # ---------------------------------------------------------------------------
+  # Generate reports for ValidatingAdmissionPolicy evaluations.
+  #
+  # WHAT IS VAP?
+  # ValidatingAdmissionPolicy is a Kubernetes-native policy mechanism
+  # (Beta in K8s 1.30, GA targeted in 1.31) that executes in the API
+  # server itself, without webhooks.
+  #
+  # BENEFITS:
+  # - Lower latency (no network round-trip to Kyverno)
+  # - Higher reliability (no external dependency)
+  # - Works even if Kyverno is down
+  #
+  # HOW IT WORKS WITH KYVERNO:
+  # 1. You write policies as Kyverno ClusterPolicy CRDs
+  # 2. Kyverno auto-generates VAP equivalents
+  # 3. API server enforces policies natively
+  # 4. Kyverno still generates reports for visibility
+  #
+  # LIMITATIONS:
+  # - Not all Kyverno policies can be converted to VAP
+  # - Mutations and generates cannot use VAP
+  # - Complex conditions may not translate
+  # ---------------------------------------------------------------------------
   validatingAdmissionPolicyReports:
     enabled: true
 
-# Auto-generation settings
+# -----------------------------------------------------------------------------
+# AUTO-GENERATION SETTINGS
+# -----------------------------------------------------------------------------
 autogen:
-  # Generate ValidatingAdmissionPolicy from ClusterPolicy
-  # Policies execute at API server level, eliminating webhook latency
+  # ---------------------------------------------------------------------------
+  # ValidatingAdmissionPolicy Generation
+  # ---------------------------------------------------------------------------
+  # Automatically convert compatible Kyverno policies to VAP.
+  #
+  # COMPATIBLE POLICIES:
+  # - Simple validate rules with CEL expressions
+  # - Resource matching without complex selectors
+  # - Policies not using external data
+  #
+  # INCOMPATIBLE POLICIES:
+  # - Mutate rules (VAP doesn't support mutation)
+  # - Generate rules
+  # - Policies using context variables
+  # - Complex JMESPath expressions
+  #
+  # STATUS (February 2026):
+  # Beta in Kyverno 1.17.0, GA targeted for 1.18.
+  # Recommended for new clusters; test carefully on upgrades.
+  #
+  # REGULATORY CONTEXT (OSFI E-21):
+  # "Resilient infrastructure controls"
+  # VAP reduces webhook dependency, improving control resilience.
+  # ---------------------------------------------------------------------------
   validatingAdmissionPolicy:
     enabled: true
 
-# Use server-side apply for policy updates
+# -----------------------------------------------------------------------------
+# SERVER-SIDE APPLY
+# -----------------------------------------------------------------------------
+# Use Kubernetes Server-Side Apply for policy updates.
+#
+# BENEFITS:
+# - Better conflict detection and resolution
+# - Field-level ownership tracking
+# - Improved performance for large policies
+#
+# RECOMMENDATION:
+# Always enable for Kubernetes 1.22+. Required for some advanced features.
+# -----------------------------------------------------------------------------
 useServerSideApply: true
 
-# Metrics
+# -----------------------------------------------------------------------------
+# METRICS CONFIGURATION
+# -----------------------------------------------------------------------------
 metricsConfig:
+  # ---------------------------------------------------------------------------
+  # Metrics Refresh Interval
+  # ---------------------------------------------------------------------------
+  # How often to recalculate aggregated metrics.
+  #
+  # 30s is a good balance:
+  # - Frequent enough for near-real-time dashboards
+  # - Not so frequent as to impact performance
+  #
+  # INCREASE if you see high CPU usage from metrics collection.
+  # ---------------------------------------------------------------------------
   metricsRefreshInterval: 30s
 
-# Service Monitor for Prometheus
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Kyverno metrics.
+#
+# KEY METRICS:
+#   kyverno_admission_requests_total:        Total admission requests
+#   kyverno_admission_request_latency_ms:    Request latency histogram
+#   kyverno_policy_results_total:            Policy evaluation results
+#   kyverno_policy_execution_duration_ms:    Policy execution time
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical):
+#   - kyverno_admission_request_latency_ms P99 > 500ms
+#   - Kyverno pods not running in kyverno namespace
+#   - Webhook failures increasing
+#
+# P2 (Warning):
+#   - High policy failure rate
+#   - kyverno_policy_results_total{result="error"} increasing
+#   - Memory usage approaching limits
+#
+# DASHBOARDS:
+# - Kyverno provides Grafana dashboards at https://kyverno.io/docs/monitoring/
+# - Consider Kyverno Policy Reporter for dedicated compliance UI
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Monitor effectiveness of ICT controls"
+# Metrics enable continuous policy effectiveness monitoring.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true

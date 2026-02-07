@@ -1,10 +1,123 @@
+# ============================================================================
+# KYVERNO POLICY: Require Image Digest
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# Container image TAGS are MUTABLE. Even "pinned" version tags like "v1.25.4"
+# can be overwritten in a registry. Only SHA256 DIGESTS are truly immutable.
+#
+# The risk hierarchy (worst to best):
+#   1. :latest              - Changes constantly, worst
+#   2. :v1 (major only)     - Changes with minor/patch versions
+#   3. :v1.25 (major.minor) - Changes with patch versions
+#   4. :v1.25.4 (full ver)  - CAN be overwritten (mutable)
+#   5. @sha256:abc123...    - IMMUTABLE, content-addressed
+#
+# WHY DIGESTS MATTER FOR SUPPLY CHAIN SECURITY:
+# ---------------------------------------------
+# Even with "v1.25.4", an attacker who compromises your registry can:
+#   1. Push malicious image to same tag
+#   2. Your next deployment pulls the malicious version
+#   3. You have no way to detect the change
+#
+# With digests (@sha256:...):
+#   1. Digest is computed from image content (like a fingerprint)
+#   2. ANY change to content = different digest
+#   3. Attacker cannot push different content with same digest
+#   4. You can verify exactly what binary is running
+#
+# HOW DIGESTS WORK:
+# -----------------
+# A digest is a SHA256 hash of the image manifest, which includes:
+#   - All layer digests (hashes of actual file content)
+#   - Image configuration (environment, entrypoint, etc.)
+#   - Architecture and OS information
+#
+# Example:
+#   Tag: nginx:1.25.4
+#   Digest: nginx@sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# The digest is computed as:
+#   SHA256(manifest JSON) = 6db391d1c0cfb30588ba0bf72ea999404f2...
+#
+# HOW ATTACKERS EXPLOIT MUTABLE TAGS:
+# -----------------------------------
+# Attack Scenario 1: Registry Compromise
+#   1. Attacker gains write access to private container registry
+#   2. Attacker modifies popular base image (e.g., internal nginx:1.25.4)
+#   3. Adds cryptominer or backdoor to image
+#   4. Pushes to same tag, overwriting legitimate image
+#   5. Next deployment pulls compromised image
+#   6. Tag-based: Attack succeeds (same tag, different content)
+#   7. Digest-based: Deployment fails (digest mismatch)
+#
+# Attack Scenario 2: Public Registry Poisoning
+#   1. Attacker compromises maintainer's credentials for popular image
+#   2. Pushes malicious version with same tag
+#   3. Thousands of organizations pull the poisoned image
+#   4. Real-world example: ua-parser-js npm package incident (2021)
+#
+# Attack Scenario 3: Build Pipeline Injection
+#   1. Attacker compromises CI/CD pipeline
+#   2. Modifies build to inject malicious code
+#   3. New malicious image pushed with same version tag
+#   4. Tag users get malicious image on next pull
+#   5. Digest users unaffected (they reference old digest)
+#
+# Attack Scenario 4: Time-of-Check-to-Time-of-Use (TOCTOU)
+#   1. Security scan checks image nginx:1.25.4 - passes
+#   2. Between scan and deployment, tag is overwritten
+#   3. Deployment pulls different (malicious) image
+#   4. Scanned content != deployed content
+#   5. Digest prevents this: scanned digest = deployed digest
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Supply Chain Risk
+#   - Requirement: "Credit unions must assess and manage risks from
+#     third-party technology providers and their supply chains"
+#   - Digests provide verification of software integrity
+#
+# OSFI B-10 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 4.1: Third Party Risk Management
+#   - Requirement: "FRFIs should have processes to verify the integrity
+#     of technology components received from third parties"
+#   - Digests enable cryptographic verification of software
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 28: ICT Third-Party Risk
+#   - Requirement: "Financial entities shall identify, assess, and manage
+#     ICT third-party risk throughout their supply chain"
+#   - Digests provide immutable reference to verified software
+#
+# NIST SSDF (Secure Software Development Framework):
+#   - PS.3.1: Verify third-party software integrity
+#   - Digests are the standard mechanism for integrity verification
+#
+# SLSA (Supply-chain Levels for Software Artifacts):
+#   - Level 1: Build process documented
+#   - Level 2: Signed provenance
+#   - Level 3: Hardened builds
+#   - Digests are prerequisite for SLSA attestation verification
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: require-image-digest
   annotations:
     policies.kyverno.io/title: Require Image Digest
+    # "Supply Chain Security" is a distinct category from Pod Security
+    # Reflects the policy's focus on software supply chain integrity
     policies.kyverno.io/category: Supply Chain Security
+    # Medium severity because:
+    # - Exploitation requires registry compromise (additional step)
+    # - Tags still provide some reproducibility (though not integrity)
+    # For high-security environments, consider treating as high
     policies.kyverno.io/severity: medium
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
@@ -15,10 +128,45 @@ metadata:
     compliance.regulated/osfi-b13: "OSFI B-10 Section 4.1 - Third Party Risk"
     compliance.regulated/dora: "DORA Article 28 - ICT Third-Party Risk"
 spec:
-  # Audit mode - stretch goal policy
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Audit (Not Enforce)
+  # ===========================================================================
+  # WHY AUDIT MODE?
+  # ---------------
+  # This policy is set to Audit because:
+  #
+  #   1. ADOPTION BARRIER: Many organizations don't have tooling to manage
+  #      digests. Enforcing immediately would block all deployments.
+  #
+  #   2. TOOLING REQUIRED: Managing digests requires:
+  #      - Build pipelines that output digests
+  #      - Manifest management that tracks digests
+  #      - Update mechanisms that refresh digests
+  #
+  #   3. GRADUAL MATURITY: This is a "stretch goal" security control.
+  #      Organizations should first achieve:
+  #      - No :latest tags (disallow-latest-tag policy)
+  #      - Version-pinned tags (nginx:1.25.4)
+  #      Then graduate to digest pinning.
+  #
+  #   4. VISIBILITY: Audit mode shows which deployments would fail,
+  #      allowing teams to prepare before enforcement.
+  #
+  # WHEN TO ENFORCE:
+  # ----------------
+  # Switch to Enforce when:
+  #   - CI/CD pipelines produce digest-pinned manifests
+  #   - Image update automation (Flux, Argo Image Updater) handles digests
+  #   - Teams are trained on digest management
+  #   - Policy report shows minimal violations
+  # ===========================================================================
   validationFailureAction: Audit
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Require Digest for Regular Containers
+    # =========================================================================
     - name: require-digest-containers
       match:
         any:
@@ -29,6 +177,10 @@ spec:
         any:
           - resources:
               namespaces:
+                # System and security tool namespaces are excluded because:
+                # - They use Helm charts with built-in versioning
+                # - Platform team manages their update lifecycle
+                # - Breaking system components affects entire cluster
                 - kube-system
                 - kube-node-lease
                 - kube-public
@@ -41,10 +193,30 @@ spec:
           Images should use a SHA256 digest for supply chain integrity.
           Regulatory guidance: NCUA Supply Chain Risk, OSFI B-10,
           DORA Article 28. Use format: image@sha256:abc123...
+        # ---------------------------------------------------------------------
+        # PATTERN EXPLAINED:
+        # ---------------------------------------------------------------------
+        # The pattern "*@sha256:*" matches:
+        #   - nginx@sha256:6db391d1... (PASSES)
+        #   - gcr.io/project/app@sha256:abc123... (PASSES)
+        #
+        # The pattern does NOT match:
+        #   - nginx:1.25.4 (FAILS - uses tag, not digest)
+        #   - nginx:latest (FAILS - uses tag, not digest)
+        #   - nginx (FAILS - no tag or digest)
+        #
+        # Note: Images can have BOTH tag AND digest:
+        #   nginx:1.25.4@sha256:6db391d1...
+        # The pattern still matches because it contains @sha256:
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
               - image: "*@sha256:*"
+
+    # =========================================================================
+    # RULE 2: Require Digest for Init Containers
+    # =========================================================================
     - name: require-digest-init-containers
       match:
         any:
@@ -74,3 +246,172 @@ spec:
           spec:
             initContainers:
               - image: "*@sha256:*"
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes (In Enforce Mode)
+# ============================================================================
+#
+# BLOCKED (Audit mode: generates policy report violation)
+# --------------------------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx                # <-- No tag or digest
+#
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:latest         # <-- Tag only, no digest
+#
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25.4         # <-- Version tag, still mutable
+#
+# PASSES
+# ------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx@sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# # With both tag (for readability) and digest (for integrity):
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25.4@sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# ============================================================================
+# HOW TO GET IMAGE DIGESTS
+# ============================================================================
+#
+# METHOD 1: Docker/Podman pull output
+# -----------------------------------
+# $ docker pull nginx:1.25.4
+# 1.25.4: Pulling from library/nginx
+# Digest: sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+# Status: Downloaded newer image for nginx:1.25.4
+#
+# METHOD 2: Docker inspect
+# ------------------------
+# $ docker inspect nginx:1.25.4 --format='{{index .RepoDigests 0}}'
+# nginx@sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# METHOD 3: Crane (recommended for CI/CD)
+# ---------------------------------------
+# $ crane digest nginx:1.25.4
+# sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# METHOD 4: Skopeo
+# ----------------
+# $ skopeo inspect docker://nginx:1.25.4 | jq -r '.Digest'
+# sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# METHOD 5: Registry API directly
+# -------------------------------
+# $ curl -s "https://registry-1.docker.io/v2/library/nginx/manifests/1.25.4" \
+#     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+#     | sha256sum
+#
+# ============================================================================
+# CI/CD INTEGRATION FOR DIGEST MANAGEMENT
+# ============================================================================
+#
+# APPROACH 1: Build Pipeline Outputs Digest
+# -----------------------------------------
+# In your CI pipeline (GitHub Actions example):
+#
+#   - name: Build and push
+#     id: build
+#     uses: docker/build-push-action@v5
+#     with:
+#       push: true
+#       tags: myregistry/myapp:${{ github.sha }}
+#
+#   - name: Update manifest with digest
+#     run: |
+#       DIGEST="${{ steps.build.outputs.digest }}"
+#       sed -i "s|image: myregistry/myapp:.*|image: myregistry/myapp@${DIGEST}|g" \
+#         k8s/deployment.yaml
+#
+# APPROACH 2: Use Kustomize with digests
+# --------------------------------------
+# kustomization.yaml:
+#   images:
+#     - name: nginx
+#       digest: sha256:6db391d1c0cfb30588ba0bf72ea999404f2764febf0f1f196acd87b6e3e39549
+#
+# APPROACH 3: Flux Image Automation
+# ---------------------------------
+# ImagePolicy with digest selection:
+#   apiVersion: image.toolkit.fluxcd.io/v1beta1
+#   kind: ImagePolicy
+#   metadata:
+#     name: myapp
+#   spec:
+#     imageRepositoryRef:
+#       name: myapp
+#     policy:
+#       semver:
+#         range: 1.x.x
+#     filterTags:
+#       extract: $version
+#       pattern: ^(?P<version>.*)$
+#
+# APPROACH 4: Argo CD Image Updater
+# ---------------------------------
+#   argocd-image-updater.argoproj.io/image-list: nginx=nginx
+#   argocd-image-updater.argoproj.io/nginx.update-strategy: digest
+#
+# ============================================================================
+# SUPPLY CHAIN SECURITY MATURITY MODEL
+# ============================================================================
+#
+# LEVEL 1: Basic (Most organizations start here)
+# - Use version tags (nginx:1.25.4)
+# - Block :latest (disallow-latest-tag policy)
+# - Manual image updates
+#
+# LEVEL 2: Intermediate (This policy in Audit mode)
+# - Use digest pinning for critical applications
+# - Automated vulnerability scanning
+# - Documented image update process
+#
+# LEVEL 3: Advanced (This policy in Enforce mode)
+# - All images use digest pinning
+# - Automated image updates with digest tracking
+# - SBOM (Software Bill of Materials) generation
+#
+# LEVEL 4: Mature
+# - SLSA Level 3 compliance
+# - Sigstore/Cosign signature verification
+# - Attestation verification for build provenance
+# - Policy-based admission for signatures
+#
+# ============================================================================
+# RELATED KYVERNO POLICIES FOR SUPPLY CHAIN
+# ============================================================================
+#
+# For complete supply chain security, consider adding:
+#
+# 1. VERIFY IMAGE SIGNATURES (Cosign/Sigstore):
+#    apiVersion: kyverno.io/v1
+#    kind: ClusterPolicy
+#    spec:
+#      rules:
+#        - verifyImages:
+#            - imageReferences:
+#                - "myregistry.io/*"
+#              attestors:
+#                - entries:
+#                    - keyless:
+#                        issuer: https://accounts.google.com
+#                        subject: myuser@example.com
+#
+# 2. VERIFY SBOM ATTESTATION:
+#    (Check that images have associated SBOM)
+#
+# 3. RESTRICT TO ALLOWED REGISTRIES:
+#    (Only allow images from trusted registries)
+#
+# ============================================================================

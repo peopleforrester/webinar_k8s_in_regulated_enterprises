@@ -1,5 +1,51 @@
-# Intentionally insecure deployment - violates all Kyverno policies
-# Used for demonstrating security controls
+# ============================================================================
+# VULNERABLE APPLICATION DEPLOYMENT - INTENTIONALLY INSECURE
+# ============================================================================
+#
+# PURPOSE:
+# This deployment demonstrates INSECURE Kubernetes configurations that would
+# be blocked by Kyverno policies in a properly secured AKS cluster. Use this
+# as a teaching tool to understand security violations and their implications.
+#
+# WARNING: DO NOT deploy this in production environments. This exists solely
+# for demonstrating policy enforcement.
+#
+# ============================================================================
+# SECURITY VIOLATIONS SUMMARY
+# ============================================================================
+#
+# This deployment violates the following security policies:
+#
+# 1. disallow-latest-tag          - Uses nginx:latest instead of pinned version
+# 2. require-resource-limits      - No CPU/memory limits defined
+# 3. disallow-privileged-containers - Runs with privileged: true
+# 4. require-run-as-nonroot       - Runs as root user (UID 0)
+# 5. require-readonly-rootfs      - Writable root filesystem
+# 6. Pod Security Standards       - Violates restricted and baseline profiles
+#
+# REGULATORY IMPACT:
+# - PCI-DSS: Fails requirements 2.2 (secure configurations), 6.4 (change control)
+# - HIPAA: Fails technical safeguard requirements for access controls
+# - SOC 2: Fails CC6.1 (logical access controls) and CC7.1 (change management)
+# - NIST 800-53: Fails CM-6 (Configuration Settings), AC-6 (Least Privilege)
+#
+# ============================================================================
+# COMPARISON WITH COMPLIANT APP
+# ============================================================================
+#
+# | Security Control          | Vulnerable App | Compliant App        |
+# |---------------------------|----------------|----------------------|
+# | Image Tag                 | :latest        | :1.25.4 (pinned)     |
+# | Privileged Mode           | true           | false                |
+# | Run as Root               | Yes (UID 0)    | No (UID 101)         |
+# | Root Filesystem           | Writable       | Read-only            |
+# | Resource Limits           | None           | CPU: 200m, Mem: 128Mi|
+# | Privilege Escalation      | Allowed        | Blocked              |
+# | Capabilities              | Full           | All dropped          |
+# | Security Context          | Minimal        | Comprehensive        |
+#
+# ============================================================================
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,8 +54,11 @@ metadata:
   labels:
     app: vulnerable-app
     environment: demo
+    # Label indicates security posture for easy identification
     security-posture: vulnerable
 spec:
+  # Single replica - no high availability
+  # Compliant apps typically run 2+ replicas for fault tolerance
   replicas: 1
   selector:
     matchLabels:
@@ -20,22 +69,216 @@ spec:
         app: vulnerable-app
         security-posture: vulnerable
     spec:
+      # References the vulnerable service account with excessive permissions
+      # See rbac.yaml for the overpermissioned ClusterRole
       serviceAccountName: vulnerable-sa
-      # No securityContext at pod level
+
+      # ========================================================================
+      # VIOLATION: No Pod-Level Security Context
+      # ========================================================================
+      # Missing pod-level securityContext means no baseline security settings.
+      # Compare with compliant-app which sets:
+      #   - runAsNonRoot: true
+      #   - fsGroup for file permissions
+      #   - seccompProfile for syscall filtering
+      # ========================================================================
+
       containers:
         - name: nginx
-          # VIOLATION: Using :latest tag (disallow-latest-tag)
+          # ==================================================================
+          # VIOLATION 1: Using :latest tag
+          # ==================================================================
+          # Policy: disallow-latest-tag
+          #
+          # WHY THIS IS DANGEROUS:
+          # - :latest is mutable - the actual image changes over time
+          # - No reproducibility - deployments may behave differently
+          # - No audit trail - can't determine exactly what's running
+          # - Supply chain risk - attacker could push malicious :latest
+          #
+          # KYVERNO POLICY THAT BLOCKS THIS:
+          #   ClusterPolicy: disallow-latest-tag
+          #   Pattern: image: "*:latest" is denied
+          #
+          # COMPLIANT ALTERNATIVE:
+          #   image: nginx:1.25.4
+          #   Or better: image: nginx@sha256:<digest> (immutable reference)
+          #
+          # REGULATORY REQUIREMENT:
+          # - PCI-DSS 6.4.3: Track and manage changes to system components
+          # - NIST 800-53 CM-2: Maintain baseline configurations
+          # ==================================================================
           image: nginx:latest
+
           ports:
             - containerPort: 80
-          # VIOLATION: No resource limits (require-resource-limits)
-          # resources: <missing>
+
+          # ==================================================================
+          # VIOLATION 2: No Resource Limits
+          # ==================================================================
+          # Policy: require-resource-limits
+          #
+          # WHY THIS IS DANGEROUS:
+          # - Pod can consume unlimited CPU/memory (resource exhaustion)
+          # - Enables Denial of Service attacks
+          # - Affects cluster stability and other workloads
+          # - No fair resource distribution (noisy neighbor problem)
+          #
+          # KYVERNO POLICY THAT BLOCKS THIS:
+          #   ClusterPolicy: require-resource-limits
+          #   Validates: spec.containers[*].resources.limits must exist
+          #
+          # COMPLIANT ALTERNATIVE:
+          #   resources:
+          #     requests:
+          #       cpu: 50m
+          #       memory: 64Mi
+          #     limits:
+          #       cpu: 200m
+          #       memory: 128Mi
+          #
+          # REGULATORY REQUIREMENT:
+          # - SOC 2 CC6.1: Implement logical access controls
+          # - NIST 800-53 SC-6: Resource availability
+          # ==================================================================
+          # resources: <intentionally omitted for demo>
+
           securityContext:
-            # VIOLATION: Privileged container (disallow-privileged-containers)
+            # ================================================================
+            # VIOLATION 3: Privileged Container
+            # ================================================================
+            # Policy: disallow-privileged-containers
+            #
+            # WHY THIS IS DANGEROUS:
+            # - Full access to host devices (/dev)
+            # - Can load kernel modules
+            # - Can access all host namespaces
+            # - Essentially root on the node - complete cluster compromise
+            # - Container escape is trivial
+            #
+            # REAL-WORLD ATTACK:
+            #   1. Attacker compromises container via app vulnerability
+            #   2. With privileged=true, mounts host filesystem
+            #   3. Reads all secrets, compromises node, pivots to cluster
+            #
+            # KYVERNO POLICY THAT BLOCKS THIS:
+            #   ClusterPolicy: disallow-privileged-containers
+            #   Pattern: securityContext.privileged: "!true"
+            #
+            # COMPLIANT ALTERNATIVE:
+            #   privileged: false
+            #
+            # REGULATORY REQUIREMENT:
+            # - PCI-DSS 7.1: Limit access to system components
+            # - HIPAA 164.312(a): Access control mechanisms
+            # ================================================================
             privileged: true
-            # VIOLATION: Running as root (require-run-as-nonroot)
+
+            # ================================================================
+            # VIOLATION 4: Running as Root
+            # ================================================================
+            # Policy: require-run-as-nonroot
+            #
+            # WHY THIS IS DANGEROUS:
+            # - Root in container can exploit kernel vulnerabilities
+            # - If container escape occurs, attacker has root on node
+            # - Many CVEs require root to exploit
+            # - Violates principle of least privilege
+            #
+            # KYVERNO POLICY THAT BLOCKS THIS:
+            #   ClusterPolicy: require-run-as-nonroot
+            #   Validates: securityContext.runAsNonRoot: true
+            #   Validates: securityContext.runAsUser: >0
+            #
+            # COMPLIANT ALTERNATIVE:
+            #   runAsNonRoot: true
+            #   runAsUser: 101  # nginx user
+            #
+            # REGULATORY REQUIREMENT:
+            # - PCI-DSS 7.2.2: Restrict access based on job function
+            # - NIST 800-53 AC-6: Least privilege
+            # - CIS Benchmark 5.2.6: Do not run as root
+            # ================================================================
             runAsNonRoot: false
             runAsUser: 0
-            # VIOLATION: Writable root filesystem (require-readonly-rootfs)
+
+            # ================================================================
+            # VIOLATION 5: Writable Root Filesystem
+            # ================================================================
+            # Policy: require-readonly-rootfs
+            #
+            # WHY THIS IS DANGEROUS:
+            # - Attacker can write malicious binaries
+            # - Enables malware persistence
+            # - Allows modification of application code
+            # - Makes forensics difficult (evidence can be deleted)
+            #
+            # REAL-WORLD ATTACK:
+            #   1. Attacker exploits RCE vulnerability
+            #   2. Downloads cryptocurrency miner to /tmp
+            #   3. Modifies /etc/passwd to add backdoor user
+            #   4. Persists across container restarts
+            #
+            # KYVERNO POLICY THAT BLOCKS THIS:
+            #   ClusterPolicy: require-readonly-rootfs
+            #   Validates: securityContext.readOnlyRootFilesystem: true
+            #
+            # COMPLIANT ALTERNATIVE:
+            #   readOnlyRootFilesystem: true
+            #   # Use emptyDir volumes for directories that need writes:
+            #   volumeMounts:
+            #     - name: tmp
+            #       mountPath: /tmp
+            #
+            # REGULATORY REQUIREMENT:
+            # - PCI-DSS 10.5.5: Use file integrity monitoring
+            # - NIST 800-53 SI-7: Software integrity verification
+            # ================================================================
             readOnlyRootFilesystem: false
+
+            # ================================================================
+            # VIOLATION 6: Allow Privilege Escalation
+            # ================================================================
+            # Policy: Often part of Pod Security Standards
+            #
+            # WHY THIS IS DANGEROUS:
+            # - Allows setuid/setgid binaries to work
+            # - Process can gain more privileges than parent
+            # - Enables privilege escalation exploits
+            #
+            # COMPLIANT ALTERNATIVE:
+            #   allowPrivilegeEscalation: false
+            #
+            # REGULATORY REQUIREMENT:
+            # - NIST 800-53 AC-6(1): Authorize access for specific functions
+            # ================================================================
             allowPrivilegeEscalation: true
+
+      # ========================================================================
+      # MISSING SECURITY CONTROLS
+      # ========================================================================
+      # Compare with compliant-app which includes:
+      #
+      # 1. automountServiceAccountToken: false
+      #    - Prevents automatic mounting of service account tokens
+      #    - Reduces attack surface if container is compromised
+      #
+      # 2. seccompProfile:
+      #      type: RuntimeDefault
+      #    - Restricts system calls available to container
+      #    - Blocks dangerous syscalls like ptrace, mount, etc.
+      #
+      # 3. capabilities:
+      #      drop:
+      #        - ALL
+      #    - Removes all Linux capabilities
+      #    - Follows principle of least privilege
+      #
+      # 4. livenessProbe and readinessProbe
+      #    - Ensures unhealthy containers are restarted
+      #    - Prevents traffic to unready pods
+      #
+      # 5. emptyDir volumes for writable directories
+      #    - Allows read-only root filesystem while supporting writes
+      #    - Directories are ephemeral and per-pod
+      # ========================================================================

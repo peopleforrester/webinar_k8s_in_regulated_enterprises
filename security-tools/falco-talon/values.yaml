@@ -1,33 +1,232 @@
-# Falco Talon Helm Chart Values
+# =============================================================================
+# FALCO TALON HELM CHART VALUES
+# =============================================================================
+# Tool:    Falco Talon - Automated Threat Response Engine
 # Version: 0.3.0 (February 2026)
-# Automated threat response for Falco detections
-# https://github.com/falcosecurity/falco-talon
+# Repo:    https://github.com/falcosecurity/falco-talon
+# Docs:    https://docs.falco-talon.org/
+#
+# PURPOSE:
+# Falco Talon provides automated response capabilities for Falco detections.
+# When Falco detects a threat, Talon can automatically execute response actions:
+#   - Kill malicious pods
+#   - Isolate compromised workloads (network policies)
+#   - Capture forensic data
+#   - Trigger external workflows (webhooks, Slack, etc.)
+#
+# SECURITY PHILOSOPHY:
+# Automated response reduces "dwell time" - the time between threat detection
+# and containment. However, it also introduces risk of false positive impact.
+# Configure conservatively and expand automation as confidence grows.
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Incident response procedures must be documented"
+#   - OSFI B-13: "Timely response to security incidents"
+#   - DORA Article 11: "ICT-related incident management process"
+#   - NIST CSF: Respond function - "Response is executed"
+#
+# ARCHITECTURE:
+# +--------+     gRPC      +--------+     Kubernetes API     +-----------+
+# | Falco  | ------------> | Talon  | --------------------> | K8s Actions |
+# +--------+               +--------+                       +-----------+
+#                              |
+#                              +---> Webhooks, Slack, etc.
+#
+# Talon subscribes to Falco events via gRPC socket and executes response
+# rules based on event priority, rule name, and other criteria.
+#
+# CAUTION:
+# Automated response actions are DESTRUCTIVE. Start with logging-only mode
+# and progressively enable actions after thorough testing.
+# =============================================================================
 
-# Talon configuration
+# -----------------------------------------------------------------------------
+# TALON CONFIGURATION
+# -----------------------------------------------------------------------------
+# Core settings for how Talon processes events and executes responses.
+# -----------------------------------------------------------------------------
 config:
-  # Watch interval for Falco events
+  # ---------------------------------------------------------------------------
+  # Watch Rules
+  # ---------------------------------------------------------------------------
+  # When true, Talon watches for ConfigMap changes and reloads rules without
+  # requiring a pod restart.
+  #
+  # BENEFIT: Allows dynamic rule updates in production
+  # RISK: Misconfigured rule could take effect immediately
+  #
+  # RECOMMENDATION:
+  # Keep enabled but use GitOps (ArgoCD) to manage rule changes with proper
+  # review and approval workflows.
+  # ---------------------------------------------------------------------------
   watchRules: true
 
-  # Default action when no rule matches
+  # ---------------------------------------------------------------------------
+  # Default Action
+  # ---------------------------------------------------------------------------
+  # Action to take when an event matches no specific rule.
+  #
+  # Options:
+  #   log:     Log the event but take no action (SAFEST)
+  #   ignore:  Silently drop the event
+  #   <rule>:  Execute a default response rule
+  #
+  # PRODUCTION RECOMMENDATION:
+  # Always use "log" as default. Specific actions should be explicitly
+  # configured for known threat patterns with high confidence.
+  #
+  # SECURITY IMPLICATION:
+  # Using anything other than "log" means automated actions on EVERY Falco
+  # event without a matching rule. This is almost never desired.
+  # ---------------------------------------------------------------------------
   defaultAction: log
 
-  # Notifiers for alerting on actions taken
+  # ---------------------------------------------------------------------------
+  # Notifiers Configuration
+  # ---------------------------------------------------------------------------
+  # Notifiers send alerts when Talon takes (or would take) response actions.
+  # Critical for audit trail and incident awareness.
+  #
+  # REGULATORY CONTEXT (DORA Article 15):
+  # "ICT-related incidents shall be reported to... senior management"
+  # Notifiers enable this by routing action alerts to appropriate channels.
+  #
+  # RECOMMENDED SETUP:
+  # 1. Enable webhook for SIEM/ticketing integration
+  # 2. Enable Slack for real-time team awareness
+  # 3. Consider PagerDuty for critical actions (pod kills)
+  # ---------------------------------------------------------------------------
   notifiers:
+    # -------------------------------------------------------------------------
+    # Slack Notifier
+    # -------------------------------------------------------------------------
+    # Sends human-readable alerts to Slack channels.
+    #
+    # USE CASE:
+    # - Real-time visibility for security operations team
+    # - Allows quick human verification of automated actions
+    #
+    # SETUP:
+    # 1. Create Slack App with Incoming Webhooks permission
+    # 2. Add webhook to a dedicated security-alerts channel
+    # 3. Set webhookurl via Kubernetes Secret (not in values.yaml)
+    #
+    # PRODUCTION:
+    # Disable for demo; enable in production with proper webhook URL.
+    # Never commit webhook URLs to git - use external secrets.
+    # -------------------------------------------------------------------------
     - name: slack
-      enabled: false
+      enabled: false  # Enable in production with proper webhook
+
+    # -------------------------------------------------------------------------
+    # Webhook Notifier
+    # -------------------------------------------------------------------------
+    # Sends JSON payloads to arbitrary HTTP endpoints.
+    #
+    # USE CASES:
+    # - SIEM integration (Splunk, Elastic, Azure Sentinel)
+    # - Ticketing systems (ServiceNow, Jira)
+    # - Custom automation workflows
+    #
+    # PAYLOAD STRUCTURE:
+    # {
+    #   "action": "kill_pod",
+    #   "event": { /* Falco event */ },
+    #   "status": "executed",
+    #   "timestamp": "2026-02-06T10:15:30Z"
+    # }
+    #
+    # REGULATORY CONTEXT (NCUA Part 748):
+    # "Maintain audit trails of security events and responses"
+    # Webhook to SIEM fulfills this requirement.
+    # -------------------------------------------------------------------------
     - name: webhook
       enabled: true
-      url: ""
+      url: ""  # Set via helm --set or external secret
 
-# Falco connection settings
+# -----------------------------------------------------------------------------
+# FALCO CONNECTION SETTINGS
+# -----------------------------------------------------------------------------
+# Configuration for connecting to Falco's gRPC server.
+# -----------------------------------------------------------------------------
 falco:
-  # Connect via gRPC socket
+  # ---------------------------------------------------------------------------
+  # gRPC Socket Path
+  # ---------------------------------------------------------------------------
+  # Path to Falco's gRPC Unix socket. Must match falco.grpc.bind_address.
+  #
+  # Unix socket vs TCP:
+  #   - Unix socket: Faster, more secure (file permissions), same-node only
+  #   - TCP: Required for cross-node communication, needs TLS in production
+  #
+  # DEPLOYMENT PATTERN:
+  # Talon and Falco typically run as DaemonSets on the same nodes.
+  # The socket is shared via hostPath or emptyDir volume.
+  #
+  # COMMON ISSUES:
+  # 1. Socket path mismatch: Verify Falco config matches this value
+  # 2. Permission denied: Check volume mounts and security contexts
+  # 3. Connection refused: Ensure Falco is running and gRPC is enabled
+  #
+  # TROUBLESHOOTING:
+  # kubectl exec -it falco-talon-xxx -- ls -la /run/falco/
+  # Should show falco.sock with appropriate permissions.
+  # ---------------------------------------------------------------------------
   grpcSocket: "unix:///run/falco/falco.sock"
 
-# Response rules are loaded from ConfigMap
-# See response-rules.yaml for rule definitions
+# -----------------------------------------------------------------------------
+# RESPONSE RULES
+# -----------------------------------------------------------------------------
+# Response rules are loaded from a ConfigMap (see response-rules.yaml).
+#
+# RULE STRUCTURE OVERVIEW:
+# - name: kill-crypto-miner
+#   match:
+#     rules:
+#       - "Detect crypto miners"
+#     priority: critical
+#   actions:
+#     - action: kill_pod
+#       parameters:
+#         grace_period: 0
+#
+# RULE DESIGN PRINCIPLES:
+# 1. Start with high-confidence, high-severity threats
+# 2. Use specific rule matches (not wildcards)
+# 3. Test in log-only mode first
+# 4. Document false positive handling
+#
+# REGULATORY CONTEXT (OSFI B-13):
+# Response procedures must be documented and tested. Talon rules serve
+# as executable documentation of response procedures.
+# -----------------------------------------------------------------------------
 
-# Resource configuration
+# -----------------------------------------------------------------------------
+# RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Talon is lightweight - it's an event processor, not a scanner.
+#
+# SIZING RATIONALE:
+#   requests.cpu: 50m
+#     - Talon spends most time waiting for events
+#     - Low baseline allows efficient cluster packing
+#
+#   requests.memory: 128Mi
+#     - Minimal memory for rule engine and event processing
+#     - Most events are processed immediately (no queuing)
+#
+#   limits.cpu: 200m
+#     - Allows bursting when processing high event volumes
+#     - Prevents runaway CPU from impacting other workloads
+#
+#   limits.memory: 256Mi
+#     - Headroom for complex rule evaluation
+#     - Prevents OOM during event storms
+#
+# MONITORING:
+# Watch container_memory_working_set_bytes to validate sizing.
+# Talon should typically use <100Mi under normal operation.
+# -----------------------------------------------------------------------------
 resources:
   requests:
     cpu: 50m
@@ -36,33 +235,186 @@ resources:
     cpu: 200m
     memory: 256Mi
 
-# Run as non-root
+# -----------------------------------------------------------------------------
+# SECURITY CONTEXT
+# -----------------------------------------------------------------------------
+# Defines security constraints for the Talon container.
+#
+# SETTINGS EXPLAINED:
+#   runAsNonRoot: true
+#     - Prevents running as root (UID 0)
+#     - Mitigates container escape impact
+#
+#   runAsUser: 1000
+#     - Explicit UID for the container process
+#     - Enables consistent file permission management
+#
+#   readOnlyRootFilesystem: true
+#     - Prevents filesystem modifications
+#     - Reduces attack surface if container is compromised
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Principle of least privilege" - security tools should follow the same
+# security best practices they enforce on other workloads.
+#
+# NOTE: These settings may need adjustment if Talon requires additional
+# capabilities for certain response actions (e.g., file capture).
+# -----------------------------------------------------------------------------
 securityContext:
   runAsNonRoot: true
   runAsUser: 1000
   readOnlyRootFilesystem: true
 
-# Service account for Kubernetes actions
+# -----------------------------------------------------------------------------
+# SERVICE ACCOUNT CONFIGURATION
+# -----------------------------------------------------------------------------
+# Talon needs a Kubernetes ServiceAccount to execute response actions.
+#
+# create: true
+#   - Helm creates a dedicated ServiceAccount
+#   - Best practice: Each workload has its own SA
+#
+# name: falco-talon
+#   - Explicit name for easy reference in RBAC rules
+#   - Used in RoleBindings and audit logs
+#
+# annotations: {}
+#   - Add cloud provider annotations here
+#   - Azure Workload Identity: azure.workload.identity/client-id: <id>
+#   - AWS IRSA: eks.amazonaws.com/role-arn: <arn>
+#
+# SECURITY IMPLICATION:
+# The ServiceAccount identity is used for audit logging. All Kubernetes
+# actions by Talon will appear as "falco-talon" in audit logs.
+# -----------------------------------------------------------------------------
 serviceAccount:
   create: true
   name: falco-talon
   annotations: {}
 
-# RBAC for automated response actions
+# -----------------------------------------------------------------------------
+# RBAC CONFIGURATION
+# -----------------------------------------------------------------------------
+# Role-Based Access Control defines what actions Talon can perform.
+#
+# SECURITY PHILOSOPHY:
+# Talon needs powerful permissions to respond to threats. This is a
+# calculated risk - the automation's benefit must outweigh the risk of
+# the permissions being misused.
+#
+# MITIGATION STRATEGIES:
+# 1. Limit Talon to specific namespaces (namespace-scoped RBAC)
+# 2. Exclude sensitive namespaces (kube-system, istio-system)
+# 3. Implement approval workflows for destructive actions
+# 4. Audit all Talon actions through Kubernetes audit logging
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "Access rights shall be based on the principles of need-to-know and
+# least privilege" - each permission below is justified by specific
+# response action requirements.
+# -----------------------------------------------------------------------------
 rbac:
   create: true
-  # Permissions needed for response actions
+  # ---------------------------------------------------------------------------
+  # Permission Rules
+  # ---------------------------------------------------------------------------
+  # Each rule grants specific permissions needed for response actions.
+  # ---------------------------------------------------------------------------
   rules:
+    # -------------------------------------------------------------------------
+    # Pod Management Permissions
+    # -------------------------------------------------------------------------
+    # PURPOSE: Kill or modify pods as threat response
+    #
+    # Verbs explained:
+    #   get:    Read pod details for forensics
+    #   list:   Find related pods (same deployment, etc.)
+    #   delete: Kill malicious pods
+    #   patch:  Add labels/annotations for quarantine
+    #
+    # RESPONSE ACTIONS ENABLED:
+    #   - kill_pod: Terminate pod immediately
+    #   - label_pod: Add "quarantine: true" label
+    #   - drain_pod: Evict pod gracefully
+    #
+    # RISK ASSESSMENT:
+    # - delete can terminate critical workloads on false positive
+    # - Mitigated by specific rule matching (not wildcards)
+    # -------------------------------------------------------------------------
     - apiGroups: [""]
       resources: ["pods"]
       verbs: ["get", "list", "delete", "patch"]
+
+    # -------------------------------------------------------------------------
+    # Pod Exec Permissions
+    # -------------------------------------------------------------------------
+    # PURPOSE: Execute commands in pods for forensics/response
+    #
+    # USE CASES:
+    #   - Capture process state before termination
+    #   - Collect memory dumps for analysis
+    #   - Kill specific processes without terminating pod
+    #
+    # RISK ASSESSMENT:
+    # - HIGH RISK: exec allows arbitrary command execution
+    # - Mitigated by careful rule design and audit logging
+    # - Consider removing in very high-security environments
+    #
+    # REGULATORY NOTE:
+    # Exec capability supports forensic requirements but requires
+    # additional audit controls. Ensure Kubernetes audit logging
+    # captures all exec operations.
+    # -------------------------------------------------------------------------
     - apiGroups: [""]
       resources: ["pods/exec"]
       verbs: ["create"]
+
+    # -------------------------------------------------------------------------
+    # NetworkPolicy Permissions
+    # -------------------------------------------------------------------------
+    # PURPOSE: Isolate compromised workloads at network level
+    #
+    # Verbs explained:
+    #   get/list: Check existing network policies
+    #   create:   Apply isolation policy
+    #   patch:    Modify existing policies for isolation
+    #
+    # RESPONSE ACTIONS ENABLED:
+    #   - network_isolate: Create deny-all NetworkPolicy
+    #   - quarantine_namespace: Apply namespace-wide isolation
+    #
+    # WHY NOT DELETE?
+    # Talon should only add restrictions, not remove them.
+    # NetworkPolicy removal could open security holes.
+    #
+    # RISK ASSESSMENT:
+    # - create can disrupt legitimate traffic on false positive
+    # - Mitigated by using unique policy names (easy to identify/remove)
+    # - Include expiration annotation for automatic cleanup
+    # -------------------------------------------------------------------------
     - apiGroups: ["networking.k8s.io"]
       resources: ["networkpolicies"]
       verbs: ["get", "list", "create", "patch"]
 
-# Prometheus metrics
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus metrics scraping for Talon observability.
+#
+# KEY METRICS:
+#   talon_events_received_total:     Events received from Falco
+#   talon_actions_executed_total:    Response actions executed
+#   talon_actions_failed_total:      Failed response attempts
+#   talon_rule_matches_total:        Events matching response rules
+#
+# ALERTING RECOMMENDATIONS:
+#   - talon_actions_failed_total increasing: Investigate permission issues
+#   - talon_events_received_total flat: Check Falco connection
+#   - talon_actions_executed_total high: Review for false positives
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Monitor effectiveness of security controls"
+# Metrics enable continuous validation that response automation works.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true

@@ -1,38 +1,349 @@
-# Kubescape Operator Helm Chart Values
+# =============================================================================
+# KUBESCAPE OPERATOR HELM CHART VALUES
+# =============================================================================
+# Tool:    Kubescape - Kubernetes Security Posture Management
 # Version: 4.0.0 (February 2026)
-# Kubescape is CNCF Incubating (January 2025)
+# Repo:    https://github.com/kubescape/kubescape
+# Docs:    https://kubescape.io/docs/
+#
+# PURPOSE:
+# Kubescape is a CNCF Incubating project (since January 2025) providing
+# comprehensive Kubernetes security posture management. It scans clusters
+# against industry frameworks and provides actionable remediation guidance.
+#
+# CAPABILITIES:
+#   - Configuration scanning (misconfigurations, CIS benchmarks)
+#   - Vulnerability scanning (CVE detection in images)
+#   - RBAC analysis (excessive permissions detection)
+#   - Network policy analysis (segmentation gaps)
+#   - Runtime observability (eBPF-based behavior monitoring)
+#   - Compliance reporting (MITRE, NSA, SOC2, CIS)
+#
+# WHY KUBESCAPE FOR REGULATED INDUSTRIES?
+# 1. Maps findings to compliance frameworks (SOC2, CIS, MITRE)
+# 2. Provides risk scoring aligned with regulatory priorities
+# 3. Generates evidence for audits (scan results as artifacts)
+# 4. Continuous scanning meets "ongoing monitoring" requirements
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Risk assessment of information systems"
+#   - OSFI B-13: "Regular security assessments"
+#   - DORA Article 5: "ICT risk management framework"
+#   - PCI-DSS 6.5: "Develop applications securely"
+#   - SOC 2 CC6.1: "Security control testing"
+#
+# ARCHITECTURE:
+# +-------------+    +-------------+    +-------------+    +-------------+
+# | Operator    |    | Scanner     |    | Node Agent  |    | Storage     |
+# | (Control)   |--->| (On-demand) |    | (eBPF)      |    | (Results)   |
+# +-------------+    +-------------+    +-------------+    +-------------+
+#                          |                   |                  ^
+#                          v                   v                  |
+#                    Cluster Resources    Process/Network    Scan Results
+#                    Configuration        Behavior           (Local/Cloud)
+#
+# CNCF INCUBATING (January 2025):
+# This status indicates:
+# - Proven adoption in production environments
+# - Mature governance and community
+# - Long-term sustainability commitment
+# =============================================================================
 
-# Cluster name for identification
+# -----------------------------------------------------------------------------
+# CLUSTER IDENTIFICATION
+# -----------------------------------------------------------------------------
+# Name used to identify this cluster in Kubescape reports.
+#
+# NAMING CONVENTIONS:
+# Use consistent naming across your organization:
+#   <environment>-<region>-<purpose>
+#   Examples: prod-eastus-banking, staging-westus-dev
+#
+# WHY IT MATTERS:
+# - Multi-cluster visibility requires unique identification
+# - Compliance reports reference cluster by this name
+# - Alerting rules may filter by cluster name
+#
+# REGULATORY CONTEXT (OSFI B-13):
+# "Asset inventory must be maintained"
+# Cluster name is part of your infrastructure inventory.
+# -----------------------------------------------------------------------------
 clusterName: aks-regulated-demo
 
-# Enable continuous scanning
+# -----------------------------------------------------------------------------
+# CAPABILITIES CONFIGURATION
+# -----------------------------------------------------------------------------
+# Enable/disable specific Kubescape features.
+#
+# Each capability represents a security scanning or monitoring function.
+# Enable based on your security requirements and resource constraints.
+# -----------------------------------------------------------------------------
 capabilities:
+  # ---------------------------------------------------------------------------
+  # Continuous Scan
+  # ---------------------------------------------------------------------------
+  # Automatically scans cluster on a schedule without manual triggering.
+  #
+  # HOW IT WORKS:
+  # 1. Operator schedules scan based on cron expression
+  # 2. Scanner pod launched to evaluate cluster resources
+  # 3. Results stored and reported
+  # 4. Pod terminated after completion
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Continuous monitoring of security controls"
+  # Scheduled scanning meets this requirement without manual intervention.
+  #
+  # RESOURCE IMPACT:
+  # - Scan pods consume temporary CPU/memory during execution
+  # - Typical scan takes 2-10 minutes depending on cluster size
+  # ---------------------------------------------------------------------------
   continuousScan: enable
+
+  # ---------------------------------------------------------------------------
+  # Vulnerability Scan
+  # ---------------------------------------------------------------------------
+  # Scans container images for known vulnerabilities (CVEs).
+  #
+  # SCANNING METHOD:
+  # - Analyzes image layers and installed packages
+  # - Compares against CVE databases (NVD, vendor advisories)
+  # - Reports CVE ID, severity, and fix availability
+  #
+  # INTEGRATION:
+  # Complements Trivy Operator (which also does vulnerability scanning).
+  # Both provide defense-in-depth with different detection approaches.
+  #
+  # REGULATORY CONTEXT (DORA Article 9):
+  # "Identify and address vulnerabilities in ICT systems"
+  # CVE detection directly supports this requirement.
+  # ---------------------------------------------------------------------------
   vulnerabilityScan: enable
+
+  # ---------------------------------------------------------------------------
+  # Configuration Scan
+  # ---------------------------------------------------------------------------
+  # Evaluates Kubernetes resources against security best practices.
+  #
+  # WHAT IT CHECKS:
+  # - Pod security (runAsNonRoot, readOnlyRootFilesystem, etc.)
+  # - Resource limits and requests
+  # - RBAC permissions
+  # - Network policies
+  # - Secret management
+  # - Ingress/egress configurations
+  #
+  # FRAMEWORKS:
+  # Findings map to compliance frameworks (CIS, NSA, SOC2).
+  # See scanner.frameworks configuration below.
+  #
+  # REGULATORY CONTEXT (OSFI E-21):
+  # "Configuration standards shall be documented and enforced"
+  # Configuration scanning validates adherence to standards.
+  # ---------------------------------------------------------------------------
   configurationScan: enable
+
+  # ---------------------------------------------------------------------------
+  # Node Scan
+  # ---------------------------------------------------------------------------
+  # Scans Kubernetes nodes for misconfigurations and vulnerabilities.
+  #
+  # WHAT IT CHECKS:
+  # - Kubelet configuration
+  # - Container runtime settings
+  # - OS-level security (CIS benchmarks)
+  # - File permissions on sensitive paths
+  # - Active processes and services
+  #
+  # DEPLOYMENT:
+  # Runs as DaemonSet with node access privileges.
+  # See nodeAgent.tolerations for scheduling on all nodes.
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Secure configuration of computing infrastructure"
+  # Node scanning validates host-level security posture.
+  # ---------------------------------------------------------------------------
   nodeScan: enable
+
+  # ---------------------------------------------------------------------------
+  # Network Policy Service
+  # ---------------------------------------------------------------------------
+  # Analyzes network segmentation and policy coverage.
+  #
+  # CAPABILITIES:
+  # - Identifies workloads without network policies
+  # - Detects overly permissive policies (allow-all)
+  # - Recommends network policy configurations
+  # - Maps pod-to-pod communication patterns
+  #
+  # REGULATORY CONTEXT (DORA Article 9):
+  # "Network segmentation shall limit the impact of incidents"
+  # This capability validates segmentation implementation.
+  #
+  # INTEGRATION:
+  # Works with Kubernetes NetworkPolicy, Calico, Cilium, etc.
+  # ---------------------------------------------------------------------------
   networkPolicyService: enable
+
+  # ---------------------------------------------------------------------------
+  # Runtime Observability
+  # ---------------------------------------------------------------------------
+  # eBPF-based monitoring of runtime behavior.
+  #
+  # WHAT IT MONITORS:
+  # - Process execution patterns
+  # - Network connections (source/destination)
+  # - File system access
+  # - System call patterns
+  #
+  # RELATIONSHIP TO FALCO:
+  # Kubescape runtime observability focuses on BASELINE detection
+  # (learning normal behavior), while Falco focuses on RULE-BASED
+  # detection (matching known threat patterns).
+  #
+  # Together they provide:
+  # - Falco: Detect known threats immediately
+  # - Kubescape: Detect anomalies from learned baselines
+  #
+  # REGULATORY CONTEXT (OSFI B-13):
+  # "Behavioral monitoring for anomaly detection"
+  # Runtime observability enables this advanced detection capability.
+  #
+  # RESOURCE IMPACT:
+  # - Requires eBPF support (kernel 4.14+)
+  # - Node agent pods consume ~100Mi memory per node
+  # - CPU usage correlates with workload activity
+  # ---------------------------------------------------------------------------
   runtimeObservability: enable
 
-# Scanner configuration
+# -----------------------------------------------------------------------------
+# SCANNER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Settings for the vulnerability and configuration scanner.
+# -----------------------------------------------------------------------------
 scanner:
-  # Scan schedule (daily at 2 AM)
+  # ---------------------------------------------------------------------------
+  # Scan Schedule
+  # ---------------------------------------------------------------------------
+  # Cron expression for automated scan execution.
+  #
+  # FORMAT: minute hour day month weekday
+  # "0 2 * * *" = Every day at 2:00 AM (cluster local time)
+  #
+  # SCHEDULING CONSIDERATIONS:
+  # - Run during low-traffic periods to minimize resource impact
+  # - Align with compliance reporting cycles
+  # - Stagger across clusters to prevent thundering herd
+  #
+  # REGULATORY CONTEXT (NCUA Appendix B):
+  # "Regular security assessments" - daily scanning exceeds
+  # minimum requirements and provides continuous visibility.
+  #
+  # ALTERNATIVE SCHEDULES:
+  # - Hourly (high-change environments): "0 * * * *"
+  # - Weekly (stable environments): "0 2 * * 0"
+  # - After deployments: Trigger via CI/CD instead of cron
+  # ---------------------------------------------------------------------------
   schedule: "0 2 * * *"
 
-  # Frameworks to scan
-  # CIS-v1.12.0 aligns with Kubernetes 1.30/1.31 and includes upgraded
-  # cryptographic standards required for financial services
+  # ---------------------------------------------------------------------------
+  # Compliance Frameworks
+  # ---------------------------------------------------------------------------
+  # Security frameworks to evaluate against.
+  #
+  # AVAILABLE FRAMEWORKS (February 2026):
+  #
+  # NSA (National Security Agency):
+  #   - Kubernetes Hardening Guide
+  #   - US government security requirements
+  #   - Applicable to: All environments
+  #
+  # MITRE ATT&CK:
+  #   - Threat-focused control mapping
+  #   - Identifies attack surface coverage
+  #   - Applicable to: Threat modeling, red team validation
+  #
+  # SOC2:
+  #   - Service Organization Control Type 2
+  #   - Trust Services Criteria mapping
+  #   - Applicable to: SaaS providers, service organizations
+  #
+  # CIS-v1.12.0:
+  #   - Center for Internet Security Kubernetes Benchmark
+  #   - Version 1.12.0 aligns with Kubernetes 1.30/1.31
+  #   - CRITICAL: Includes upgraded cryptographic standards
+  #   - Required for: Financial services, healthcare
+  #
+  # WHY CIS-v1.12.0?
+  # Version 1.12.0 (released late 2025) includes:
+  # - TLS 1.3 requirements for all communications
+  # - Stronger secret encryption requirements
+  # - Updated RBAC best practices
+  # - Alignment with Kubernetes 1.30+ features
+  #
+  # REGULATORY CONTEXT:
+  # - NCUA explicitly references CIS benchmarks
+  # - OSFI accepts CIS as evidence of secure configuration
+  # - DORA requires "recognized security frameworks"
+  # ---------------------------------------------------------------------------
   frameworks:
     - NSA
     - MITRE
     - SOC2
     - CIS-v1.12.0
 
-  # Severity threshold for alerts
+  # ---------------------------------------------------------------------------
+  # Severity Threshold
+  # ---------------------------------------------------------------------------
+  # Minimum severity level for alerting.
+  #
+  # LEVELS:
+  #   critical: Only highest-severity findings
+  #   high:     Critical + High severity
+  #   medium:   Critical + High + Medium (RECOMMENDED)
+  #   low:      All findings including low severity
+  #
+  # PRODUCTION RECOMMENDATION:
+  # Start with "medium" to capture significant issues without alert fatigue.
+  # Adjust based on your team's capacity to investigate findings.
+  #
+  # REGULATORY CONTEXT (OSFI B-13):
+  # "Prioritize remediation based on risk"
+  # Severity thresholds enable risk-based prioritization.
+  # ---------------------------------------------------------------------------
   severityThreshold: medium
 
-# Resource configuration
+# -----------------------------------------------------------------------------
+# RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Resource limits for Kubescape components.
+# -----------------------------------------------------------------------------
 resources:
+  # ---------------------------------------------------------------------------
+  # Scanner Resources
+  # ---------------------------------------------------------------------------
+  # Scanner pods run on-demand (not continuously) for cluster assessment.
+  #
+  # SIZING RATIONALE:
+  #   requests.cpu: 100m
+  #     - Baseline for image/config analysis
+  #     - Most work is I/O bound (reading manifests)
+  #
+  #   requests.memory: 256Mi
+  #     - Holds analysis state and CVE databases
+  #     - Large images need more memory
+  #
+  #   limits.cpu: 500m
+  #     - Allows burst during intensive analysis
+  #     - Prevents monopolizing node CPU
+  #
+  #   limits.memory: 512Mi
+  #     - Headroom for large cluster scans
+  #     - Increase for 500+ workload clusters
+  #
+  # MONITORING:
+  # Scanner is ephemeral; check Job completion times and resource usage.
+  # ---------------------------------------------------------------------------
   scanner:
     requests:
       cpu: 100m
@@ -40,6 +351,16 @@ resources:
     limits:
       cpu: 500m
       memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # Operator Resources
+  # ---------------------------------------------------------------------------
+  # Operator is the long-running controller managing scan lifecycle.
+  #
+  # SIZING RATIONALE:
+  #   Very lightweight - just schedules scans and aggregates results.
+  #   50m/128Mi is sufficient for most clusters.
+  # ---------------------------------------------------------------------------
   operator:
     requests:
       cpu: 50m
@@ -48,18 +369,113 @@ resources:
       cpu: 200m
       memory: 256Mi
 
-# Storage for scan results
+# -----------------------------------------------------------------------------
+# STORAGE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Configuration for storing scan results.
+# -----------------------------------------------------------------------------
 storage:
+  # ---------------------------------------------------------------------------
+  # Enable Local Storage
+  # ---------------------------------------------------------------------------
+  # Store scan results locally in the cluster (vs cloud backend).
+  #
+  # OPTIONS:
+  #   enabled: true  - Results stored in cluster (PVC or ConfigMaps)
+  #   enabled: false - Results only sent to Kubescape cloud (if configured)
+  #
+  # PRODUCTION RECOMMENDATION:
+  # Enable local storage for:
+  # - Air-gapped environments
+  # - Data residency requirements
+  # - Backup/archive of compliance evidence
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Maintain records of security assessments"
+  # Local storage ensures you retain evidence regardless of vendor.
+  # ---------------------------------------------------------------------------
   enabled: true
-  # Retain scan results for 90 days
+
+  # ---------------------------------------------------------------------------
+  # Retention Period
+  # ---------------------------------------------------------------------------
+  # How long to keep scan results.
+  #
+  # 90 DAYS RATIONALE:
+  # - Exceeds typical audit lookback period (60-90 days)
+  # - Allows trend analysis over quarterly periods
+  # - Balances storage costs with compliance needs
+  #
+  # REGULATORY REQUIREMENTS:
+  # - NCUA: 7 years for compliance records (but scan results ≠ records)
+  # - OSFI: "Reasonable period" - 90 days is widely accepted
+  # - DORA: 5 years for major incidents (scans aren't incidents)
+  #
+  # STORAGE IMPACT:
+  # Estimate ~1-5MB per scan depending on cluster size.
+  # 90 days of daily scans = 90-450MB.
+  # ---------------------------------------------------------------------------
   retentionPeriod: 90d
 
-# Service Monitor for Prometheus
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Kubescape metrics.
+#
+# KEY METRICS:
+#   kubescape_scan_duration_seconds:     Time to complete scans
+#   kubescape_controls_total:            Controls evaluated
+#   kubescape_controls_passed:           Passing controls
+#   kubescape_controls_failed:           Failing controls
+#   kubescape_vulnerabilities_total:     CVEs detected by severity
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical):
+#   - kubescape_controls_failed{severity="critical"} > 0
+#   - kubescape_vulnerabilities_total{severity="critical"} increasing
+#
+# P2 (Warning):
+#   - Scan failure (Job not completing)
+#   - kubescape_controls_passed percentage dropping
+#   - New high-severity findings
+#
+# DASHBOARDS:
+# Kubescape provides Grafana dashboards for security posture visualization.
+# Consider also Policy Reporter for unified compliance dashboards.
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Continuous monitoring of ICT security controls"
+# Metrics enable this continuous monitoring requirement.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true
 
-# Node agent tolerations
+# -----------------------------------------------------------------------------
+# NODE AGENT CONFIGURATION
+# -----------------------------------------------------------------------------
+# Settings for the DaemonSet that runs on every node.
+# -----------------------------------------------------------------------------
 nodeAgent:
+  # ---------------------------------------------------------------------------
+  # Tolerations
+  # ---------------------------------------------------------------------------
+  # Allow node agent to run on all nodes, including tainted ones.
+  #
+  # WHY REQUIRED:
+  # Node scanning requires presence on EVERY node to provide complete
+  # coverage. Missing a node creates a security blind spot.
+  #
+  # NoSchedule TOLERATION:
+  # Allows scheduling on nodes that normally reject workloads:
+  #   - GPU nodes
+  #   - Spot/preemptible nodes
+  #   - Specialized workload nodes
+  #
+  # PRODUCTION CONSIDERATION:
+  # Add NoExecute toleration for production (like Falco) to survive
+  # node tainting during maintenance or issues.
+  # ---------------------------------------------------------------------------
   tolerations:
     - effect: NoSchedule
       operator: Exists

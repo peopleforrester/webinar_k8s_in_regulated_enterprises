@@ -1,5 +1,184 @@
-# Overpermissioned ClusterRole - intentionally insecure
-# Grants the vulnerable app access to secrets across the cluster
+# ============================================================================
+# VULNERABLE APPLICATION RBAC - INTENTIONALLY OVERPERMISSIONED
+# ============================================================================
+#
+# PURPOSE:
+# This file demonstrates DANGEROUS RBAC configurations that violate the
+# principle of least privilege. It grants cluster-wide access to sensitive
+# resources, creating significant security risks.
+#
+# WARNING: This configuration would allow a compromised container to:
+#   - Read secrets from all namespaces (credentials, API keys, TLS certs)
+#   - Execute commands in any pod (lateral movement)
+#   - Enumerate the entire cluster (reconnaissance)
+#
+# ============================================================================
+# SECURITY VIOLATIONS DETAILED
+# ============================================================================
+#
+# VIOLATION 1: ClusterRole vs Role
+# --------------------------------
+# This uses a ClusterRole + ClusterRoleBinding, granting CLUSTER-WIDE access.
+# Secure applications should use Role + RoleBinding (namespace-scoped).
+#
+# | Type                | Scope               | Security Impact          |
+# |---------------------|---------------------|--------------------------|
+# | Role                | Single namespace    | Minimal blast radius     |
+# | ClusterRole         | All namespaces      | Full cluster compromise  |
+#
+#
+# VIOLATION 2: Access to Secrets
+# ------------------------------
+# Rule: resources: ["secrets"] verbs: ["get", "list", "watch"]
+#
+# This allows reading ALL secrets in ALL namespaces, including:
+#   - Database passwords
+#   - API tokens
+#   - TLS private keys
+#   - Azure service principal credentials
+#   - Third-party integration secrets
+#
+# Attack scenario:
+#   kubectl get secrets --all-namespaces -o yaml > /tmp/all-secrets.yaml
+#   # Attacker now has every credential in the cluster
+#
+#
+# VIOLATION 3: Pods/Exec Permission
+# ---------------------------------
+# Rule: resources: ["pods/exec"] verbs: ["create"]
+#
+# This allows executing commands inside ANY pod in the cluster.
+# This is essentially remote code execution across the entire cluster.
+#
+# Attack scenario:
+#   kubectl exec -it production-database-0 -- /bin/sh
+#   # Attacker is now inside your production database pod
+#
+#
+# VIOLATION 4: Broad Resource Access
+# ----------------------------------
+# Access to pods, services, deployments, replicasets enables:
+#   - Cluster reconnaissance
+#   - Identifying high-value targets
+#   - Understanding application architecture
+#
+# ============================================================================
+# KYVERNO POLICIES THAT SHOULD BLOCK THIS
+# ============================================================================
+#
+# 1. Block Cluster-Wide RBAC for Applications:
+#
+#   apiVersion: kyverno.io/v1
+#   kind: ClusterPolicy
+#   metadata:
+#     name: block-app-cluster-roles
+#   spec:
+#     validationFailureAction: enforce
+#     rules:
+#       - name: block-cluster-role-binding
+#         match:
+#           resources:
+#             kinds:
+#               - ClusterRoleBinding
+#         validate:
+#           message: "Application workloads cannot use ClusterRoleBindings"
+#           pattern:
+#             subjects:
+#               - kind: "!ServiceAccount"
+#
+#
+# 2. Block Access to Secrets:
+#
+#   apiVersion: kyverno.io/v1
+#   kind: ClusterPolicy
+#   metadata:
+#     name: block-secret-access
+#   spec:
+#     validationFailureAction: enforce
+#     rules:
+#       - name: no-secrets-access
+#         match:
+#           resources:
+#             kinds:
+#               - ClusterRole
+#               - Role
+#         validate:
+#           message: "Roles cannot grant access to secrets"
+#           deny:
+#             conditions:
+#               - key: "{{ request.object.rules[].resources[] }}"
+#                 operator: AnyIn
+#                 value: ["secrets"]
+#
+#
+# 3. Block Pods/Exec Access:
+#
+#   apiVersion: kyverno.io/v1
+#   kind: ClusterPolicy
+#   metadata:
+#     name: block-pod-exec
+#   spec:
+#     validationFailureAction: enforce
+#     rules:
+#       - name: no-exec-access
+#         match:
+#           resources:
+#             kinds:
+#               - ClusterRole
+#               - Role
+#         validate:
+#           message: "Roles cannot grant pods/exec permission"
+#           deny:
+#             conditions:
+#               - key: "{{ request.object.rules[].resources[] }}"
+#                 operator: AnyIn
+#                 value: ["pods/exec"]
+#
+# ============================================================================
+# REGULATORY VIOLATIONS
+# ============================================================================
+#
+# PCI-DSS:
+#   - 7.1: Limit access to system components (VIOLATED)
+#   - 7.2.1: Access control systems (VIOLATED - no proper access control)
+#   - 7.2.2: Access based on job classification (VIOLATED - excessive access)
+#
+# HIPAA:
+#   - 164.312(a)(1): Access control (VIOLATED)
+#   - 164.312(d): Person or entity authentication (VIOLATED - too broad)
+#
+# SOC 2:
+#   - CC6.1: Logical access controls (VIOLATED)
+#   - CC6.2: User access authorization (VIOLATED)
+#   - CC6.3: System access based on role (VIOLATED)
+#
+# NIST 800-53:
+#   - AC-2: Account management (VIOLATED)
+#   - AC-6: Least privilege (CRITICALLY VIOLATED)
+#   - AC-6(1): Authorize access for security functions (VIOLATED)
+#
+# ============================================================================
+# COMPARISON: Vulnerable vs Compliant RBAC
+# ============================================================================
+#
+# VULNERABLE (this file):
+#   - ClusterRole (cluster-wide scope)
+#   - Access to secrets
+#   - pods/exec permission
+#   - Read access to many resources
+#
+# COMPLIANT (no RBAC file needed):
+#   - No Role or ClusterRole created
+#   - ServiceAccount has NO additional permissions
+#   - automountServiceAccountToken: false in ServiceAccount
+#   - Application cannot interact with Kubernetes API
+#
+# The most secure RBAC configuration is often NO RBAC at all.
+# Most applications don't need to interact with the Kubernetes API.
+#
+# ============================================================================
+
+# ClusterRole - DANGEROUS: Grants cluster-wide permissions
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -8,16 +187,60 @@ metadata:
     app: vulnerable-app
     environment: demo
 rules:
+  # =========================================================================
+  # VIOLATION: Read access to secrets, configmaps, pods, services
+  # =========================================================================
+  # This grants ability to read sensitive data across ALL namespaces.
+  #
+  # Secrets may contain:
+  #   - Database credentials
+  #   - API keys and tokens
+  #   - TLS certificates and private keys
+  #   - Cloud provider credentials
+  #   - Service account tokens
+  #
+  # ConfigMaps may contain:
+  #   - Application configuration with sensitive settings
+  #   - Connection strings
+  #   - Feature flags that could be exploited
+  # =========================================================================
   - apiGroups: [""]
     resources: ["secrets", "configmaps", "pods", "services"]
     verbs: ["get", "list", "watch"]
+
+  # =========================================================================
+  # VIOLATION: Pods/exec permission - Remote Code Execution
+  # =========================================================================
+  # This is one of the most dangerous permissions possible.
+  # It allows executing arbitrary commands inside ANY pod.
+  #
+  # With this permission, an attacker can:
+  #   kubectl exec -it <any-pod> -- /bin/bash
+  #
+  # This enables:
+  #   - Accessing data in other pods
+  #   - Reading environment variables with secrets
+  #   - Using that pod's ServiceAccount for further attacks
+  #   - Pivoting through the cluster
+  # =========================================================================
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
+
+  # =========================================================================
+  # VIOLATION: Access to workload resources
+  # =========================================================================
+  # Reading deployments and replicasets allows:
+  #   - Understanding application architecture
+  #   - Finding high-value targets
+  #   - Identifying older, potentially vulnerable deployments
+  # =========================================================================
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets"]
     verbs: ["get", "list"]
+
 ---
+# ClusterRoleBinding - Binds the dangerous ClusterRole to the ServiceAccount
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -26,10 +249,13 @@ metadata:
     app: vulnerable-app
     environment: demo
 roleRef:
+  # References the ClusterRole defined above
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: vulnerable-app-role
 subjects:
+  # Binds to the vulnerable-sa ServiceAccount
+  # Any pod using this ServiceAccount gets these permissions
   - kind: ServiceAccount
     name: vulnerable-sa
     namespace: vulnerable-app

@@ -1,3 +1,99 @@
+# ============================================================================
+# KYVERNO POLICY: Require Resource Limits
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# Without resource limits, a single container can consume all CPU and memory
+# on a node, causing:
+#
+#   1. DENIAL OF SERVICE: One runaway container starves all others
+#   2. NODE INSTABILITY: OOM killer terminates random processes
+#   3. CASCADING FAILURES: Overloaded nodes affect entire cluster
+#   4. NOISY NEIGHBOR: One tenant's workload impacts others
+#
+# This is both a security AND operational resilience issue:
+#   - Security: Resource exhaustion is a DoS attack vector
+#   - Operations: Uncontrolled resources make capacity planning impossible
+#
+# TECHNICAL BACKGROUND:
+# ---------------------
+# Kubernetes uses Linux cgroups to enforce resource limits:
+#
+# CPU Limits:
+#   - Enforced via CFS (Completely Fair Scheduler) bandwidth control
+#   - Container is throttled when it exceeds its limit
+#   - Unit: cores (1 = one full core, 500m = half a core)
+#   - Throttling causes latency spikes, not termination
+#
+# Memory Limits:
+#   - Enforced via cgroup memory controller
+#   - Container is OOM-killed when it exceeds its limit
+#   - Unit: bytes (128Mi = 128 mebibytes, 1Gi = 1 gibibyte)
+#   - OOM-kill is immediate termination (SIGKILL)
+#
+# Requests vs Limits:
+#   - Requests: Guaranteed resources (used for scheduling)
+#   - Limits: Maximum resources (used for enforcement)
+#   - Pod is only scheduled if node has enough for Requests
+#   - Pod is terminated/throttled if it exceeds Limits
+#
+# HOW ATTACKERS EXPLOIT MISSING LIMITS:
+# -------------------------------------
+# Attack Scenario 1: Cryptocurrency Mining
+#   1. Attacker exploits vulnerability in web application
+#   2. Attacker deploys cryptominer that consumes all CPU
+#   3. Without limits: Miner uses 100% of node CPU
+#   4. All other pods on node become unresponsive
+#   5. Cluster auto-scaling kicks in, increasing cloud costs
+#
+# Attack Scenario 2: Memory-Based DoS (Zip Bomb)
+#   1. Attacker uploads malicious archive to file processing service
+#   2. Service decompresses 1KB file into 10GB of data
+#   3. Without limits: Container consumes all node memory
+#   4. OOM killer terminates random pods (not just the attacker's)
+#   5. Critical financial services become unavailable
+#
+# Attack Scenario 3: Fork Bomb
+#   1. Attacker achieves code execution in container
+#   2. Attacker runs: :(){ :|:& };: (classic fork bomb)
+#   3. Without limits: Fork bomb consumes all CPU/memory
+#   4. Node becomes completely unresponsive
+#   5. Kubelet cannot communicate with control plane
+#
+# Attack Scenario 4: Resource Exhaustion via Legitimate Functions
+#   1. Attacker triggers expensive operation (complex query, report generation)
+#   2. Operation consumes unbounded resources
+#   3. Repeated triggering exhausts node capacity
+#   4. Appears as legitimate traffic, harder to detect as attack
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Operational Resilience
+#   - Requirement: "Credit unions must ensure continued availability of
+#     critical member services during adverse events"
+#   - Resource limits prevent cascade failures
+#
+# OSFI B-13 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 6.1: Capacity Management
+#   - Requirement: "FRFIs should maintain sufficient capacity to meet
+#     normal and peak demand, with headroom for unexpected events"
+#   - Without limits, capacity cannot be planned or guaranteed
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 11: ICT Capacity and Performance
+#   - Requirement: "Financial entities shall implement policies...to ensure
+#     adequate and redundant ICT capacity, including during peak periods"
+#   - Resource limits are fundamental to capacity management
+#
+# PCI DSS 4.0:
+#   - Requirement 12.10.2: Business Continuity
+#   - Operational continuity requires predictable resource allocation
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -5,6 +101,8 @@ metadata:
   annotations:
     policies.kyverno.io/title: Require Resource Limits
     policies.kyverno.io/category: Best Practices
+    # Medium severity because impact is availability (not confidentiality/integrity)
+    # However, for financial services where availability is critical, treat as high
     policies.kyverno.io/severity: medium
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
@@ -16,9 +114,25 @@ metadata:
     compliance.regulated/osfi-b13: "OSFI B-13 Section 6.1 - Capacity Management"
     compliance.regulated/dora: "DORA Article 11 - ICT Capacity and Performance"
 spec:
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Enforce
+  # ===========================================================================
+  # We enforce this policy because:
+  #   1. There is NO legitimate reason to skip resource limits in production
+  #   2. The impact of missing limits can be cluster-wide outage
+  #   3. Regulatory requirements mandate capacity management
+  #   4. Cost management also requires resource limits
+  #
+  # NOTE: Developers may push back because limits require testing to tune.
+  # Response: That testing is necessary anyway for production readiness.
+  # ===========================================================================
   validationFailureAction: Enforce
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Require Resource Limits for Regular Containers
+    # =========================================================================
     - name: require-limits-containers
       match:
         any:
@@ -29,9 +143,21 @@ spec:
         any:
           - resources:
               namespaces:
+                # -------------------------------------------------------------
+                # System namespace exclusions:
+                # Core Kubernetes components are managed by the distribution
+                # and have appropriate limits configured by the vendor.
+                # Modifying them could destabilize the cluster.
+                # -------------------------------------------------------------
                 - kube-system
                 - kube-node-lease
                 - kube-public
+                # -------------------------------------------------------------
+                # Security tool exclusions:
+                # Security tools need to scale with cluster activity.
+                # Their resource needs are managed by platform team.
+                # Example: Falco CPU usage scales with syscall volume.
+                # -------------------------------------------------------------
                 - kyverno
                 - falco
                 - trivy-system
@@ -42,6 +168,25 @@ spec:
           Regulatory requirement: Operational resilience requires
           resource boundaries. Add resources.limits.cpu and
           resources.limits.memory to container spec.
+        # ---------------------------------------------------------------------
+        # PATTERN EXPLAINED:
+        # ---------------------------------------------------------------------
+        # This pattern requires BOTH cpu AND memory limits:
+        #   memory: "?*" means "any non-empty value"
+        #   cpu: "?*" means "any non-empty value"
+        #
+        # The "?*" pattern matches any string with at least one character,
+        # ensuring the field is not empty or missing.
+        #
+        # Note: We check limits, not requests. Why?
+        #   - Requests without limits still allow unbounded consumption
+        #   - Limits are what actually enforce the constraint
+        #   - Requests affect scheduling; limits affect runtime behavior
+        #
+        # Best Practice: Set both requests AND limits:
+        #   - requests = typical usage (for scheduling efficiency)
+        #   - limits = maximum allowed (for protection)
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
@@ -49,6 +194,20 @@ spec:
                   limits:
                     memory: "?*"
                     cpu: "?*"
+
+    # =========================================================================
+    # RULE 2: Require Resource Limits for Init Containers
+    # =========================================================================
+    # Init containers often perform intensive operations:
+    #   - Downloading large datasets
+    #   - Database migrations
+    #   - Certificate generation
+    #
+    # Without limits, init containers can:
+    #   - Delay all pods on a node (consuming resources during startup)
+    #   - Cause OOM kills affecting other pods
+    #   - Run indefinitely if they hang
+    # =========================================================================
     - name: require-limits-init-containers
       match:
         any:
@@ -81,3 +240,158 @@ spec:
                   limits:
                     memory: "?*"
                     cpu: "?*"
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes
+# ============================================================================
+#
+# BLOCKED - No resource limits
+# ----------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25      # <-- BLOCKED: No resources specified
+#
+# BLOCKED - Only requests, no limits
+# ----------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           memory: "64Mi"
+#           cpu: "250m"        # <-- BLOCKED: Only requests, no limits
+#
+# BLOCKED - Only memory limit
+# ---------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       resources:
+#         limits:
+#           memory: "128Mi"    # <-- BLOCKED: Missing cpu limit
+#
+# PASSES - Both limits specified
+# ------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       resources:
+#         limits:
+#           memory: "128Mi"
+#           cpu: "500m"        # <-- PASSES: Both limits present
+#
+# BEST PRACTICE - Both requests and limits
+# ----------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           memory: "64Mi"     # Typical usage - used for scheduling
+#           cpu: "100m"
+#         limits:
+#           memory: "128Mi"    # Maximum allowed - used for enforcement
+#           cpu: "500m"
+#
+# ============================================================================
+# RESOURCE LIMIT GUIDELINES FOR FINANCIAL SERVICES
+# ============================================================================
+#
+# GENERAL GUIDELINES:
+# -------------------
+# 1. Start conservative, scale up based on monitoring
+# 2. Set limits 2-3x higher than requests initially
+# 3. Monitor actual usage with Prometheus/Grafana
+# 4. Adjust after observing real-world behavior
+#
+# MEMORY LIMITS:
+# --------------
+# - Too low: OOM kills cause service disruption
+# - Too high: Wasted capacity, poor bin packing
+# - Tip: Applications usually have predictable memory patterns
+#
+# CPU LIMITS:
+# -----------
+# - Too low: Latency spikes due to throttling
+# - Too high: Risk of resource exhaustion, wasted capacity
+# - Tip: CPU is more elastic than memory; start low, tune up
+#
+# RECOMMENDED STARTING POINTS BY WORKLOAD TYPE:
+# ---------------------------------------------
+# Web/API servers (stateless):
+#   requests: { memory: "128Mi", cpu: "100m" }
+#   limits:   { memory: "512Mi", cpu: "500m" }
+#
+# Background workers:
+#   requests: { memory: "256Mi", cpu: "200m" }
+#   limits:   { memory: "1Gi", cpu: "1" }
+#
+# Databases (consider using operators instead):
+#   requests: { memory: "1Gi", cpu: "500m" }
+#   limits:   { memory: "4Gi", cpu: "2" }
+#
+# LIMIT RANGES:
+# -------------
+# Consider using LimitRange objects to set defaults and maximums per namespace:
+#
+#   apiVersion: v1
+#   kind: LimitRange
+#   metadata:
+#     name: default-limits
+#   spec:
+#     limits:
+#       - default:           # Default limits if not specified
+#           memory: "256Mi"
+#           cpu: "500m"
+#         defaultRequest:    # Default requests if not specified
+#           memory: "128Mi"
+#           cpu: "100m"
+#         max:               # Maximum limits allowed
+#           memory: "2Gi"
+#           cpu: "2"
+#         type: Container
+#
+# ============================================================================
+# REMEDIATION GUIDANCE
+# ============================================================================
+#
+# Step 1: Analyze current resource usage
+# --------------------------------------
+# Use kubectl top to see actual usage:
+#   $ kubectl top pods -n <namespace>
+#
+# Or query Prometheus:
+#   container_memory_usage_bytes{pod="<pod-name>"}
+#   container_cpu_usage_seconds_total{pod="<pod-name>"}
+#
+# Step 2: Set initial limits
+# --------------------------
+# Add to your pod spec:
+#   resources:
+#     requests:
+#       memory: "128Mi"
+#       cpu: "100m"
+#     limits:
+#       memory: "256Mi"
+#       cpu: "500m"
+#
+# Step 3: Monitor and tune
+# ------------------------
+# Watch for:
+#   - OOMKilled events: Increase memory limit
+#   - CPU throttling: Check container_cpu_cfs_throttled_seconds_total
+#   - Unused capacity: Reduce limits to improve bin packing
+#
+# Step 4: Implement Vertical Pod Autoscaler (VPA)
+# -----------------------------------------------
+# For automated tuning, consider VPA:
+#   - Recommender: Suggests appropriate resource values
+#   - Updater: Can automatically adjust resources
+#   - Admission Controller: Sets resources on pod creation
+#
+# ============================================================================

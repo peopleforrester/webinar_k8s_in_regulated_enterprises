@@ -1,54 +1,305 @@
-# Falco Helm Chart Values
+# =============================================================================
+# FALCO HELM CHART VALUES - Development/Demo Configuration
+# =============================================================================
+# Tool:    Falco - Cloud-Native Runtime Security
 # Version: 0.43.0 (February 2026)
-# Note: Falco 0.43.0 deprecates legacy eBPF probe, gVisor engine, and gRPC.
-# Use modern_ebpf for production deployments.
+# Repo:    https://github.com/falcosecurity/charts
+# Docs:    https://falco.org/docs/
+#
+# PURPOSE:
+# Falco is a CNCF Graduated project that provides runtime threat detection for
+# containers, Kubernetes, and Linux systems. It monitors system calls in real-
+# time to detect anomalous behavior such as:
+#   - Shell spawned in a container
+#   - Sensitive file access (e.g., /etc/shadow, /etc/passwd)
+#   - Unexpected network connections
+#   - Privilege escalation attempts
+#   - Container escape attempts
+#
+# REGULATORY CONTEXT:
+# Runtime security monitoring is required by:
+#   - NCUA Part 748: "Implement monitoring to detect unauthorized access"
+#   - OSFI B-13: "Continuous monitoring of technology systems"
+#   - DORA Article 10: "Detection of anomalous activities"
+#   - PCI-DSS 10.6: "Review logs and security events"
+#
+# ARCHITECTURE:
+# Falco runs as a DaemonSet on every node, using eBPF probes to capture
+# syscalls from the kernel. Events are processed against rules and forwarded
+# to outputs (Falcosidekick, gRPC, stdout).
+#
+# WARNING: Falco 0.43.0 deprecates:
+#   - Legacy eBPF probe (use modern_ebpf instead)
+#   - gVisor engine
+#   - Legacy gRPC (switching to new gRPC implementation)
+#
+# DEMO vs PRODUCTION:
+# This file is configured for DEMO/DEVELOPMENT use. See values-production.yaml
+# for production-hardened settings with stricter resource limits and error handling.
+# =============================================================================
 
-# Modern eBPF driver - recommended for production
+# -----------------------------------------------------------------------------
+# DRIVER CONFIGURATION
+# -----------------------------------------------------------------------------
+# The "driver" is how Falco captures system calls from the kernel. This is the
+# most critical configuration choice as it affects performance and compatibility.
+#
+# Available options:
+#   modern_ebpf: (RECOMMENDED) Uses CO-RE (Compile Once, Run Everywhere) eBPF.
+#                Works on kernel 5.8+ without kernel headers. Best performance.
+#   ebpf:        Legacy eBPF probe. Requires kernel headers. Being deprecated.
+#   kmod:        Kernel module. Highest privilege, requires module compilation.
+#   auto:        Tries modern_ebpf -> ebpf -> kmod. Not recommended for prod.
+#
+# SECURITY IMPLICATION:
+# The modern_ebpf driver requires CAP_BPF and CAP_SYS_ADMIN capabilities.
+# These are necessary for runtime security but represent elevated privileges.
+# This is a security trade-off: you need elevated privileges to monitor for
+# security threats at the kernel level.
+#
+# REGULATORY NOTE (NCUA/OSFI):
+# Document why elevated privileges are necessary in your security documentation.
+# The compensating control is that Falco itself is security-hardened and
+# monitored.
+# -----------------------------------------------------------------------------
 driver:
   kind: modern_ebpf
 
-# Falco configuration
+# -----------------------------------------------------------------------------
+# FALCO CORE CONFIGURATION
+# -----------------------------------------------------------------------------
+# These settings control Falco's core behavior including output formats,
+# logging, and rule loading.
+# -----------------------------------------------------------------------------
 falco:
+  # ---------------------------------------------------------------------------
+  # gRPC Server Configuration
+  # ---------------------------------------------------------------------------
+  # gRPC provides high-performance, structured event streaming to clients like
+  # Falco Talon (automated response) and custom integrations.
+  #
+  # WHY UNIX SOCKET?
+  # Using a Unix socket (unix://) instead of TCP provides:
+  #   1. Better security: No network exposure, file permissions apply
+  #   2. Lower latency: No TCP overhead
+  #   3. Simpler setup: No TLS configuration needed for same-node comms
+  #
+  # The socket file is mounted as a shared volume with Falcosidekick/Talon.
+  #
+  # THREADINESS:
+  #   0 = auto-detect based on CPU cores (good for demo)
+  #   N = explicit thread count (set to 8+ for production)
+  #
+  # SECURITY IMPLICATION:
+  # The gRPC socket allows reading all security events. Protect access using
+  # Kubernetes RBAC and pod security policies.
+  # ---------------------------------------------------------------------------
   grpc:
     enabled: true
     bind_address: "unix:///run/falco/falco.sock"
-    threadiness: 0
+    threadiness: 0  # Auto-detect; set explicitly in production
+
   grpc_output:
     enabled: true
 
-  # JSON output for easy parsing
+  # ---------------------------------------------------------------------------
+  # JSON Output Configuration
+  # ---------------------------------------------------------------------------
+  # JSON output is CRITICAL for SIEM integration and log aggregation.
+  #
+  # json_output: Enables JSON formatted events (vs plain text)
+  # json_include_output_property: Includes human-readable description
+  # json_include_tags_property: Includes rule tags for filtering/routing
+  #
+  # REGULATORY CONTEXT (DORA Article 12):
+  # "ICT-related incidents shall be classified based on... priority indicators"
+  # Tags enable automatic classification and routing of security events.
+  #
+  # Example JSON output:
+  # {
+  #   "priority": "Warning",
+  #   "rule": "Terminal shell in container",
+  #   "output": "A shell was spawned in container...",
+  #   "tags": ["container", "shell", "mitre_execution"],
+  #   "time": "2026-02-06T10:15:30Z"
+  # }
+  #
+  # IF DISABLED:
+  # Plain text output makes SIEM parsing difficult and may break automated
+  # alerting pipelines. Only disable for debugging.
+  # ---------------------------------------------------------------------------
   json_output: true
   json_include_output_property: true
   json_include_tags_property: true
 
-  # Log level
+  # ---------------------------------------------------------------------------
+  # Log Level
+  # ---------------------------------------------------------------------------
+  # Controls verbosity of Falco's internal logs (not security events).
+  #
+  # Options: emergency, alert, critical, error, warning, notice, info, debug
+  #
+  # DEMO: "info" provides visibility into Falco operations
+  # PROD: "warning" or "error" to reduce log volume
+  #
+  # NOTE: This affects Falco's operational logs, NOT security event output.
+  # Security events are always output regardless of log level.
+  # ---------------------------------------------------------------------------
   log_level: info
 
-  # Rule files to load
+  # ---------------------------------------------------------------------------
+  # Rule Files Configuration
+  # ---------------------------------------------------------------------------
+  # Falco loads rules from these locations in order. Later files can override
+  # earlier rules using the same rule name.
+  #
+  # Default rule files:
+  #   falco_rules.yaml:       Core detection rules from Falco project
+  #   falco_rules.local.yaml: Local overrides (tune false positives)
+  #   rules.d/:               Directory for custom rules (modular)
+  #
+  # CUSTOMIZATION STRATEGY:
+  # 1. NEVER modify falco_rules.yaml directly (will be overwritten on upgrade)
+  # 2. Use falco_rules.local.yaml to disable/modify default rules
+  # 3. Use rules.d/ for custom detection rules specific to your environment
+  #
+  # REGULATORY CONTEXT (NCUA Appendix B):
+  # Custom rules should detect threats specific to financial services:
+  #   - Access to financial data paths
+  #   - Cryptocurrency mining detection
+  #   - Data exfiltration patterns
+  # ---------------------------------------------------------------------------
   rules_file:
     - /etc/falco/falco_rules.yaml
     - /etc/falco/falco_rules.local.yaml
     - /etc/falco/rules.d
 
-  # Syscall event drops - alert if Falco can't keep up
+  # ---------------------------------------------------------------------------
+  # Syscall Event Drop Handling
+  # ---------------------------------------------------------------------------
+  # When system is under heavy load, Falco may not be able to process all
+  # syscall events. This is a CRITICAL security concern - dropped events
+  # mean potential threats go undetected.
+  #
+  # threshold: Percentage of events that can be dropped before action (0.1 = 10%)
+  #
+  # actions:
+  #   log:   Log the drop event (always recommended)
+  #   alert: Generate a Falco alert for drops (recommended for monitoring)
+  #   exit:  Terminate Falco (use in production to force investigation)
+  #
+  # DEMO SETTING: 10% threshold with log/alert only
+  # PRODUCTION:   1% threshold (0.01) with exit action (see values-production.yaml)
+  #
+  # REGULATORY CONTEXT (OSFI B-13):
+  # Monitoring gaps must be detected and addressed. The alert action ensures
+  # operations teams are notified when security monitoring is degraded.
+  #
+  # IF EVENTS ARE DROPPING:
+  # 1. Increase Falco resource limits (CPU/memory)
+  # 2. Review and optimize rule complexity
+  # 3. Check for noisy rules generating excessive matches
+  # ---------------------------------------------------------------------------
   syscall_event_drops:
-    threshold: 0.1
+    threshold: 0.1  # 10% - acceptable for demo; tighten for production
     actions:
       - log
       - alert
 
-# Load custom rules
+# -----------------------------------------------------------------------------
+# CUSTOM RULES
+# -----------------------------------------------------------------------------
+# Custom Falco rules specific to your environment. These are loaded in
+# addition to the default rules.
+#
+# For this financial services demo, we include rules for:
+#   - Sensitive financial data access
+#   - Cryptocurrency mining detection
+#   - Compliance-related monitoring
+#
+# See custom-rules/financial-services.yaml for complete rule definitions.
+#
+# RULE ANATOMY:
+# - rule: Detect Shell in Container
+#   desc: A shell was spawned inside a container
+#   condition: spawned_process and container and shell_procs
+#   output: Shell spawned (user=%user.name container=%container.name)
+#   priority: WARNING
+#   tags: [container, shell, mitre_execution]
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# Custom rules should map to specific threat scenarios identified in your
+# risk assessment. Each rule should be documented with:
+#   - Threat scenario being detected
+#   - Expected false positive rate
+#   - Response procedure reference
+# -----------------------------------------------------------------------------
 customRules:
   financial-services.yaml: |
     # Custom rules for financial services environments
     # See custom-rules/financial-services.yaml for full content
 
-# Tolerations to run on all nodes
+# -----------------------------------------------------------------------------
+# TOLERATIONS
+# -----------------------------------------------------------------------------
+# Tolerations allow Falco pods to run on nodes with specific taints.
+# As a security tool, Falco MUST run on ALL nodes to provide complete coverage.
+#
+# This configuration tolerates:
+#   - NoSchedule: Nodes that normally don't accept workloads
+#
+# SECURITY IMPLICATION:
+# If Falco doesn't run on a node, that node has NO runtime security monitoring.
+# This creates a blind spot that attackers could exploit.
+#
+# DEMO: Basic toleration for common taints
+# PROD: Add NoExecute toleration (see values-production.yaml)
+#
+# EXAMPLES OF NODES THAT NEED TOLERATIONS:
+#   - Control plane nodes (if running workloads)
+#   - GPU nodes
+#   - Specialized workload nodes
+#   - Spot/preemptible nodes
+# -----------------------------------------------------------------------------
 tolerations:
   - effect: NoSchedule
     operator: Exists
 
-# Resource requests/limits
+# -----------------------------------------------------------------------------
+# RESOURCE REQUESTS AND LIMITS
+# -----------------------------------------------------------------------------
+# Resource configuration for Falco pods. Proper sizing is CRITICAL because:
+#   1. Under-provisioned Falco leads to event drops (security gap)
+#   2. Over-provisioned Falco wastes cluster resources
+#
+# DEMO SETTINGS (Suitable for low-traffic environments):
+#   requests: Minimum guaranteed resources
+#     cpu: 100m (0.1 CPU core)
+#     memory: 512Mi
+#   limits: Maximum allowed resources
+#     cpu: 1000m (1 CPU core)
+#     memory: 1024Mi
+#
+# PRODUCTION SETTINGS (See values-production.yaml):
+#   requests: cpu: 500m, memory: 1Gi
+#   limits: cpu: 2000m, memory: 2Gi
+#
+# SIZING GUIDANCE:
+#   - Small cluster (<10 nodes): requests 100m/512Mi, limits 500m/1Gi
+#   - Medium cluster (10-50 nodes): requests 250m/1Gi, limits 1/2Gi
+#   - Large cluster (50+ nodes): requests 500m/2Gi, limits 2/4Gi
+#   - High-syscall workloads: Increase CPU proportionally
+#
+# MONITORING:
+# Watch these Prometheus metrics to validate sizing:
+#   - falco_outputs_queue_capacity_used: >80% means increase memory
+#   - process_cpu_seconds_total: Sustained high means increase CPU
+#   - falco_kernel_event_drops_total: Any drops mean increase resources
+#
+# REGULATORY CONTEXT (OSFI E-21):
+# Adequate resources ensure security monitoring doesn't degrade under load.
+# Document your sizing decisions and monitor continuously.
+# -----------------------------------------------------------------------------
 resources:
   requests:
     cpu: 100m
@@ -57,6 +308,28 @@ resources:
     cpu: 1000m
     memory: 1024Mi
 
-# Prometheus metrics
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Falco metrics for observability.
+#
+# KEY METRICS EXPOSED:
+#   falco_events_total: Total events processed by rule priority
+#   falco_kernel_event_drops_total: Critical - indicates capacity issues
+#   falco_outputs_queue_capacity_used: Queue fill level
+#   falco_rules_count: Number of loaded rules by state
+#   falco_uptime_seconds: Falco process uptime
+#
+# ALERTING RECOMMENDATIONS:
+# Configure Prometheus alerts for:
+#   - falco_kernel_event_drops_total increasing: P1 alert
+#   - falco_outputs_queue_capacity_used > 80%: P2 alert
+#   - Falco pod restarts: P2 alert
+#   - falco_uptime_seconds < 300 repeatedly: P1 alert (crash loop)
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Detection capabilities shall be tested regularly"
+# Prometheus metrics enable continuous validation that detection is working.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true

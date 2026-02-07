@@ -1,10 +1,102 @@
+# ============================================================================
+# KYVERNO POLICY: Require Run As Non-Root
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# By default, containers run as the root user (UID 0) inside the container.
+# While container namespaces provide some isolation, running as root creates
+# significant risks:
+#
+#   1. CONTAINER ESCAPE: Many container escape vulnerabilities (CVE-2019-5736,
+#      CVE-2020-15257, CVE-2022-0185) require or are easier to exploit when
+#      running as root inside the container.
+#
+#   2. FILE PERMISSION BYPASS: Root inside the container can modify any files
+#      the container has access to, including mounted secrets and ConfigMaps.
+#
+#   3. KERNEL EXPLOITS: Root user can attempt kernel exploits that would fail
+#      for non-root users, even within container namespaces.
+#
+#   4. DEFENSE IN DEPTH FAILURE: If any other isolation layer fails (seccomp,
+#      AppArmor, capabilities), root provides maximum attack surface.
+#
+# TECHNICAL BACKGROUND:
+# ---------------------
+# In Linux, UID 0 (root) has special privileges that the kernel checks for:
+#   - CAP_DAC_OVERRIDE: Bypass file permission checks
+#   - CAP_SYS_ADMIN: God-mode capability for many operations
+#   - Many kernel code paths have "if (uid == 0)" checks
+#
+# Even with user namespaces (where container root maps to non-root on host),
+# running as root inside the container means any container escape gives full
+# root access on the host.
+#
+# HOW ATTACKERS EXPLOIT THIS VULNERABILITY:
+# -----------------------------------------
+# Attack Scenario 1: Container Runtime Escape (CVE-2019-5736)
+#   1. Attacker compromises application running as root in container
+#   2. Attacker exploits runc vulnerability to overwrite host runc binary
+#   3. Next container operation runs attacker's code as root on host
+#   4. PREREQUISITE: Process must run as root inside container
+#
+# Attack Scenario 2: Mounted Secret Exfiltration
+#   1. Application mounts Kubernetes secrets as files (common pattern)
+#   2. Application vulnerability allows file read (path traversal, SSRF)
+#   3. Non-root: Secrets mounted as root-owned files are unreadable
+#   4. Root: Attacker reads all mounted secrets regardless of permissions
+#
+# Attack Scenario 3: Privilege Escalation via SUID
+#   1. Container image contains SUID binary (common in base images)
+#   2. Attacker exploits application vulnerability
+#   3. Attacker executes SUID binary to escalate to root
+#   4. Root user can then attempt container escape techniques
+#
+# Attack Scenario 4: Kernel Exploit Amplification
+#   1. New kernel vulnerability discovered (happens regularly)
+#   2. Non-root: Exploit fails due to permission checks
+#   3. Root: Exploit succeeds, attacker escapes to host
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Least Privilege
+#   - Requirement: "Access rights should be limited to the minimum
+#     necessary to perform job functions"
+#   - Root access inside containers is NEVER the minimum necessary
+#
+# OSFI B-13 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 4.3.2: Least Privilege Access
+#   - Requirement: "Privileges assigned to users, software components, and
+#     devices should be limited to the least level necessary"
+#   - Running as root violates least privilege principle
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 9(4)(c): Access Control Policies
+#   - Requirement: "Policies and procedures to limit physical and logical
+#     access to ICT systems and data to what is required"
+#   - Root provides unrestricted logical access within container
+#
+# CIS Kubernetes Benchmark:
+#   - Control 5.2.6: Minimize the admission of root containers
+#   - Level 1 - Scored control (must pass for compliance)
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: require-run-as-nonroot
   annotations:
     policies.kyverno.io/title: Require Run As Non-Root
+    # "Restricted" is the strictest Pod Security Standard level
+    # This control is part of the Restricted profile
     policies.kyverno.io/category: Pod Security Standards (Restricted)
+    # High severity because:
+    # - Multiple CVEs require root for exploitation
+    # - Violates fundamental security principle (least privilege)
+    # - Required for regulatory compliance
     policies.kyverno.io/severity: high
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
@@ -15,9 +107,28 @@ metadata:
     compliance.regulated/osfi-b13: "OSFI B-13 Section 4.3.2 - Least Privilege Access"
     compliance.regulated/dora: "DORA Article 9(4)(c) - Access Control Policies"
 spec:
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Enforce
+  # ===========================================================================
+  # We enforce this policy because:
+  #   1. Most applications do NOT need root (they just haven't been configured)
+  #   2. The attack surface reduction is significant
+  #   3. CIS Benchmark requires this as a scored control
+  #   4. Regulatory frameworks mandate least privilege
+  #
+  # NOTE: This may break some third-party applications that assume root.
+  # Those applications should either:
+  #   a. Be configured to run as non-root (most support this)
+  #   b. Be replaced with alternatives that follow security best practices
+  #   c. Be granted a PolicyException with documented business justification
+  # ===========================================================================
   validationFailureAction: Enforce
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Require Non-Root for Regular Containers
+    # =========================================================================
     - name: require-nonroot-containers
       match:
         any:
@@ -28,12 +139,26 @@ spec:
         any:
           - resources:
               namespaces:
+                # -------------------------------------------------------------
+                # System namespace exclusions explained:
+                # -------------------------------------------------------------
+                # kube-system: Core components like kube-proxy may need root
+                # for network namespace operations. This is cluster-managed.
                 - kube-system
                 - kube-node-lease
                 - kube-public
+                # -------------------------------------------------------------
+                # Security tool exclusions explained:
+                # -------------------------------------------------------------
+                # kyverno: Admission controller needs elevated permissions
+                # to intercept all API server requests
                 - kyverno
+                # falco: eBPF-based runtime security requires root to attach
+                # kernel probes for detecting malicious syscalls
                 - falco
+                # trivy-system: Image scanning may need root for layer extraction
                 - trivy-system
+                # kubescape: Security assessment tool needs cluster-wide access
                 - kubescape
       validate:
         message: >-
@@ -41,11 +166,44 @@ spec:
           NCUA Least Privilege, OSFI B-13 Section 4.3.2,
           DORA Article 9(4)(c). Set securityContext.runAsNonRoot to true
           and specify a non-root runAsUser.
+        # ---------------------------------------------------------------------
+        # PATTERN EXPLAINED:
+        # ---------------------------------------------------------------------
+        # This pattern REQUIRES runAsNonRoot: true to be explicitly set.
+        # Unlike the privileged policy (which uses anchors to check if set),
+        # here we mandate the field's presence.
+        #
+        # Why not just check runAsUser > 0?
+        #   - runAsUser is optional; runAsNonRoot is the enforcement mechanism
+        #   - runAsNonRoot: true tells Kubernetes to VERIFY at runtime
+        #   - Even if image defines USER root, pod will fail to start
+        #
+        # The Kubernetes runtime enforces runAsNonRoot by:
+        #   1. Checking the image's USER directive
+        #   2. Checking the pod's runAsUser if specified
+        #   3. Failing pod startup if either would result in root
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
               - securityContext:
                   runAsNonRoot: true
+
+    # =========================================================================
+    # RULE 2: Require Non-Root for Init Containers
+    # =========================================================================
+    # IMPORTANT: Init containers are often overlooked but equally important!
+    #
+    # Init containers run BEFORE main containers, with full access to:
+    #   - Mounted volumes (including secrets)
+    #   - Network namespaces
+    #   - Any preparation the main container needs
+    #
+    # Attackers specifically target init containers because:
+    #   - Less scrutiny in code reviews
+    #   - Often given elevated permissions "just for setup"
+    #   - Run before security sidecars (like Istio) are ready
+    # =========================================================================
     - name: require-nonroot-init-containers
       match:
         any:
@@ -77,3 +235,125 @@ spec:
             initContainers:
               - securityContext:
                   runAsNonRoot: true
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes
+# ============================================================================
+#
+# BLOCKED - No securityContext specified
+# --------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25      # <-- BLOCKED: No runAsNonRoot specified
+#
+# BLOCKED - runAsNonRoot explicitly false
+# ---------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         runAsNonRoot: false   # <-- BLOCKED: Explicitly allows root
+#
+# BLOCKED - runAsUser: 0
+# ----------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         runAsUser: 0          # <-- BLOCKED: UID 0 is root
+#         runAsNonRoot: true    # This would conflict and fail anyway
+#
+# PASSES - Correctly configured
+# -----------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         runAsNonRoot: true    # <-- PASSES: Enforces non-root
+#         runAsUser: 1000       # <-- Optional but recommended
+#
+# PASSES - Pod-level securityContext (applies to all containers)
+# --------------------------------------------------------------
+# spec:
+#   securityContext:
+#     runAsNonRoot: true        # <-- PASSES: All containers inherit this
+#     runAsUser: 1000
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#     - name: sidecar
+#       image: envoy:1.28
+#
+# ============================================================================
+# REMEDIATION GUIDANCE
+# ============================================================================
+#
+# Step 1: Determine if your application actually needs root
+# ---------------------------------------------------------
+# Most applications do NOT need root. Common misconceptions:
+#   - "I need port 80" -> Use port 8080 and a Service
+#   - "I need to install packages" -> Build a proper container image
+#   - "I need to write to /var/log" -> Use emptyDir volume mount
+#
+# Step 2: Update your container image
+# ------------------------------------
+# Add to your Dockerfile:
+#   # Create non-root user
+#   RUN groupadd -r appuser && useradd -r -g appuser appuser
+#   # Change ownership of app directory
+#   RUN chown -R appuser:appuser /app
+#   # Switch to non-root user
+#   USER appuser
+#
+# Step 3: Update your pod spec
+# ----------------------------
+# spec:
+#   securityContext:
+#     runAsNonRoot: true
+#     runAsUser: 1000
+#     runAsGroup: 1000
+#     fsGroup: 1000              # For volume permission inheritance
+#   containers:
+#     - name: app
+#       image: myapp:1.0
+#       securityContext:
+#         allowPrivilegeEscalation: false
+#         readOnlyRootFilesystem: true
+#
+# Step 4: Handle file permission issues
+# -------------------------------------
+# If your app needs to write files, use emptyDir:
+#   volumes:
+#     - name: tmp
+#       emptyDir: {}
+#   containers:
+#     - name: app
+#       volumeMounts:
+#         - name: tmp
+#           mountPath: /tmp
+#
+# ============================================================================
+# COMMON ISSUES AND SOLUTIONS
+# ============================================================================
+#
+# Issue: "Permission denied" errors after enabling runAsNonRoot
+# Solution: Check file/directory ownership in your container image.
+#           Add RUN chown commands to your Dockerfile.
+#
+# Issue: Third-party image requires root
+# Solution:
+#   a. Check if vendor provides a non-root variant (e.g., nginx-unprivileged)
+#   b. Build your own image based on theirs with USER directive
+#   c. Request PolicyException with documented justification (last resort)
+#
+# Issue: Init container needs root for setup
+# Solution:
+#   a. Move setup logic to container image build time
+#   b. Use a Kubernetes Job for one-time setup
+#   c. Use projected volumes instead of file manipulation
+#
+# ============================================================================

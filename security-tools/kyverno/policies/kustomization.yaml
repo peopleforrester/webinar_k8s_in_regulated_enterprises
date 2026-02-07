@@ -1,10 +1,274 @@
+# ============================================================================
+# KUSTOMIZATION: Kyverno Security Policies for Financial Services
+# ============================================================================
+#
+# WHAT THIS FILE DOES:
+# --------------------
+# This Kustomization file tells Kustomize which Kyverno policies to deploy
+# together. When you run `kubectl apply -k .` or `kustomize build .`, it
+# combines all listed resources into a single deployment.
+#
+# WHY USE KUSTOMIZE FOR POLICIES?
+# -------------------------------
+# 1. ATOMIC DEPLOYMENT: All policies deploy together or none do
+# 2. ENVIRONMENT OVERLAYS: Different settings for dev/staging/production
+# 3. POLICY VERSIONING: Track policy changes in Git
+# 4. CUSTOMIZATION: Patch validation modes without modifying base policies
+#
+# DEPLOYMENT ORDER:
+# -----------------
+# Policies are applied in the order listed. While Kyverno doesn't strictly
+# require ordering, we list them from most critical to least critical:
+#
+# 1. disallow-privileged-containers  - CRITICAL: Prevents cluster takeover
+# 2. require-run-as-nonroot          - HIGH: Reduces exploit severity
+# 3. disallow-latest-tag             - MEDIUM: Change management compliance
+# 4. require-resource-limits         - MEDIUM: Operational resilience
+# 5. require-image-digest            - STRETCH: Supply chain integrity
+# 6. require-readonly-rootfs         - STRETCH: Defense in depth
+#
+# ENFORCEMENT VS AUDIT MODES:
+# ---------------------------
+# Current configuration:
+#   ENFORCE (Blocks non-compliant resources):
+#     - disallow-privileged-containers
+#     - disallow-latest-tag
+#     - require-run-as-nonroot
+#     - require-resource-limits
+#
+#   AUDIT (Reports violations, allows resources):
+#     - require-image-digest
+#     - require-readonly-rootfs
+#
+# The Audit-mode policies are "stretch goals" that require additional
+# tooling or application changes before enforcement is practical.
+#
+# ============================================================================
+# REGULATORY COMPLIANCE MAPPING
+# ============================================================================
+#
+# Each policy maps to specific regulatory requirements:
+#
+# +------------------------------------+--------+--------+--------+
+# | Policy                             | NCUA   | OSFI   | DORA   |
+# +------------------------------------+--------+--------+--------+
+# | disallow-privileged-containers     | Cyber  | B-13   | Art.9  |
+# | disallow-latest-tag                | Change | B-13   | Art.9  |
+# | require-run-as-nonroot             | Least  | B-13   | Art.9  |
+# | require-resource-limits            | Resil  | B-13   | Art.11 |
+# | require-image-digest               | Supply | B-10   | Art.28 |
+# | require-readonly-rootfs            | Harden | B-13   | Art.9  |
+# +------------------------------------+--------+--------+--------+
+#
+# Legend:
+#   NCUA: National Credit Union Administration (USA)
+#     Cyber  = Cybersecurity Controls
+#     Change = Change Management
+#     Least  = Least Privilege
+#     Resil  = Operational Resilience
+#     Supply = Supply Chain Risk
+#     Harden = Container Hardening
+#
+#   OSFI: Office of the Superintendent of Financial Institutions (Canada)
+#     B-13 = Technology and Cyber Risk Management Guideline
+#     B-10 = Third-Party Risk Management Guideline
+#
+#   DORA: Digital Operational Resilience Act (EU)
+#     Art.9  = ICT Risk Management
+#     Art.11 = Capacity and Performance Management
+#     Art.28 = ICT Third-Party Risk
+#
+# ============================================================================
+# HOW TO USE THIS KUSTOMIZATION
+# ============================================================================
+#
+# BASIC DEPLOYMENT:
+# -----------------
+# Deploy all policies to cluster:
+#   $ kubectl apply -k security-tools/kyverno/policies/
+#
+# Preview what will be deployed:
+#   $ kustomize build security-tools/kyverno/policies/
+#
+# Remove all policies:
+#   $ kubectl delete -k security-tools/kyverno/policies/
+#
+# VERIFY DEPLOYMENT:
+# ------------------
+# List deployed policies:
+#   $ kubectl get clusterpolicies
+#
+# Check policy status:
+#   $ kubectl get clusterpolicies -o wide
+#
+# View policy reports:
+#   $ kubectl get policyreports -A
+#   $ kubectl get clusterpolicyreports
+#
+# VIEW POLICY VIOLATIONS:
+# -----------------------
+# All violations (audit mode):
+#   $ kubectl get policyreports -A -o json | \
+#       jq '.items[].results[] | select(.result == "fail")'
+#
+# Violations for specific namespace:
+#   $ kubectl get policyreport -n my-namespace -o yaml
+#
+# ============================================================================
+# ENVIRONMENT-SPECIFIC OVERLAYS
+# ============================================================================
+#
+# For different environments, create overlays that patch the validation mode.
+# Example overlay structure:
+#
+# policies/
+# ├── base/                          # This directory
+# │   ├── kustomization.yaml         # This file
+# │   ├── disallow-privileged-containers.yaml
+# │   └── ...
+# ├── overlays/
+# │   ├── development/
+# │   │   ├── kustomization.yaml     # Patches to Audit mode
+# │   │   └── patches/
+# │   │       └── audit-mode.yaml    # Change validationFailureAction
+# │   ├── staging/
+# │   │   └── kustomization.yaml     # Same as production, for testing
+# │   └── production/
+# │       └── kustomization.yaml     # Full enforcement
+#
+# EXAMPLE: Development overlay patch (all policies in Audit mode)
+# ---------------------------------------------------------------
+# # overlays/development/patches/audit-mode.yaml
+# apiVersion: kyverno.io/v1
+# kind: ClusterPolicy
+# metadata:
+#   name: disallow-privileged-containers
+# spec:
+#   validationFailureAction: Audit
+#
+# # overlays/development/kustomization.yaml
+# apiVersion: kustomize.config.k8s.io/v1beta1
+# kind: Kustomization
+# resources:
+#   - ../../base
+# patches:
+#   - path: patches/audit-mode.yaml
+#     target:
+#       kind: ClusterPolicy
+#
+# ============================================================================
+# ADDING NEW POLICIES
+# ============================================================================
+#
+# To add a new policy:
+#
+# 1. Create the policy YAML file following the template pattern
+# 2. Add comprehensive educational comments
+# 3. Map to regulatory requirements in annotations
+# 4. Add the filename to the resources list below
+# 5. Update the compliance mapping table above
+# 6. Test in development/staging before production
+#
+# Policy naming convention:
+#   - disallow-*: Prevents a configuration
+#   - require-*: Mandates a configuration
+#   - restrict-*: Limits to specific values
+#   - audit-*: Reporting-only policies
+#
+# ============================================================================
+# KYVERNO BEST PRACTICES
+# ============================================================================
+#
+# 1. START IN AUDIT MODE
+#    Deploy new policies in Audit mode first to understand impact.
+#
+# 2. MONITOR POLICY REPORTS
+#    Set up alerting on PolicyReport resources for violations.
+#
+# 3. USE POLICY EXCEPTIONS
+#    For legitimate exceptions, use PolicyException resources with:
+#    - Documented business justification
+#    - Expiration date
+#    - Limited scope
+#
+# 4. VERSION CONTROL
+#    Keep policies in Git with change tracking and code review.
+#
+# 5. STAGED ROLLOUT
+#    Development (Audit) -> Staging (Enforce) -> Production (Enforce)
+#
+# 6. INTEGRATION TESTING
+#    Test policies against your actual workloads before deployment.
+#
+# ============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Policies are listed in priority order (most critical first)
+# All policies will be deployed together as a set
 resources:
+  # -------------------------------------------------------------------------
+  # TIER 1: Critical Security Controls (Enforce Mode)
+  # These policies address the most severe security risks and must not be
+  # bypassed in any regulated environment.
+  # -------------------------------------------------------------------------
+
+  # Prevents container escape and cluster takeover
+  # Regulatory: NCUA Cybersecurity, OSFI B-13 4.3, DORA Art.9
   - disallow-privileged-containers.yaml
+
+  # Enforces least privilege principle (CIS Benchmark Level 1)
+  # Regulatory: NCUA Least Privilege, OSFI B-13 4.3.2, DORA Art.9(4)(c)
   - require-run-as-nonroot.yaml
+
+  # -------------------------------------------------------------------------
+  # TIER 2: Important Operational Controls (Enforce Mode)
+  # These policies ensure operational stability and compliance with change
+  # management requirements.
+  # -------------------------------------------------------------------------
+
+  # Ensures deployment reproducibility for change management
+  # Regulatory: NCUA Change Management, OSFI B-13 5.2, DORA Art.9(4)(e)
   - disallow-latest-tag.yaml
+
+  # Prevents resource exhaustion and ensures capacity planning
+  # Regulatory: NCUA Resilience, OSFI B-13 6.1, DORA Art.11
   - require-resource-limits.yaml
+
+  # -------------------------------------------------------------------------
+  # TIER 3: Advanced Security Controls (Audit Mode - Stretch Goals)
+  # These policies provide additional security hardening but require
+  # tooling and process changes before enforcement is practical.
+  # -------------------------------------------------------------------------
+
+  # Provides supply chain integrity through immutable image references
+  # Regulatory: NCUA Supply Chain, OSFI B-10 4.1, DORA Art.28
   - require-image-digest.yaml
+
+  # Defense in depth - prevents runtime filesystem modification
+  # Regulatory: NCUA Hardening, OSFI B-13 4.3, DORA Art.9(2)
   - require-readonly-rootfs.yaml
+
+# ============================================================================
+# OPTIONAL: Common Labels for all Policies
+# ============================================================================
+# Uncomment to add labels to all policies for easier filtering:
+#
+# commonLabels:
+#   app.kubernetes.io/part-of: security-policies
+#   app.kubernetes.io/managed-by: kustomize
+#   compliance.regulated/scope: financial-services
+
+# ============================================================================
+# OPTIONAL: Patches for Environment-Specific Configuration
+# ============================================================================
+# Add patches here to modify policies for specific environments.
+# Example: Change all policies to Audit mode for development:
+#
+# patches:
+#   - patch: |-
+#       - op: replace
+#         path: /spec/validationFailureAction
+#         value: Audit
+#     target:
+#       kind: ClusterPolicy

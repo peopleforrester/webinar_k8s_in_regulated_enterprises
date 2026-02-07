@@ -1,3 +1,98 @@
+# ============================================================================
+# VULNERABLE APPLICATION NAMESPACE - DEMONSTRATION ENVIRONMENT
+# ============================================================================
+#
+# PURPOSE:
+# Creates an isolated namespace for the vulnerable application demo.
+# This namespace intentionally lacks security labels that would enforce
+# Pod Security Standards.
+#
+# ============================================================================
+# SECURITY CONSIDERATIONS
+# ============================================================================
+#
+# WHAT'S MISSING (Compared to Compliant App Namespace):
+#
+# 1. Pod Security Standards (PSS) Labels:
+#    The compliant namespace would include:
+#      pod-security.kubernetes.io/enforce: restricted
+#      pod-security.kubernetes.io/audit: restricted
+#      pod-security.kubernetes.io/warn: restricted
+#
+#    Without these labels, Kubernetes allows ANY pod configuration.
+#
+# 2. Resource Quotas:
+#    Production namespaces should have ResourceQuota objects limiting:
+#    - Total CPU/memory that can be requested
+#    - Number of pods, services, secrets
+#    - Storage claims
+#
+# 3. LimitRange:
+#    Default resource limits for pods without explicit limits.
+#
+# 4. Network Policies:
+#    See compliant-app/networkpolicy.yaml for proper network segmentation.
+#    Without NetworkPolicies, all pods can communicate with all other pods.
+#
+# ============================================================================
+# POD SECURITY STANDARDS (PSS) EXPLAINED
+# ============================================================================
+#
+# Kubernetes defines three Pod Security Standards profiles:
+#
+# PRIVILEGED (Most Permissive):
+#   - No restrictions at all
+#   - Used for system-level workloads (CNI, storage drivers)
+#   - NOT suitable for application workloads
+#
+# BASELINE (Minimal Restrictions):
+#   - Prevents known privilege escalations
+#   - Allows hostNetwork, hostPID with restrictions
+#   - Suitable for legacy applications being migrated
+#
+# RESTRICTED (Most Secure):
+#   - Heavily restricted configuration
+#   - Requires non-root, read-only root filesystem
+#   - Drops all capabilities
+#   - Required for regulated environments
+#
+# The vulnerable-app would FAIL the restricted profile because it:
+#   - Runs as root (UID 0)
+#   - Uses privileged: true
+#   - Has writable root filesystem
+#   - Doesn't drop capabilities
+#   - Allows privilege escalation
+#
+# ============================================================================
+# REGULATORY CONTEXT
+# ============================================================================
+#
+# In regulated environments (PCI-DSS, HIPAA, SOC 2), namespace isolation
+# is critical for:
+#
+# - PCI-DSS: Isolating cardholder data environments (CDE)
+# - HIPAA: Segmenting systems with PHI from non-PHI systems
+# - SOC 2: Demonstrating logical access controls
+#
+# This demo namespace intentionally lacks these controls to show what
+# Kyverno policies catch and block.
+#
+# ============================================================================
+# LABEL EXPLANATION
+# ============================================================================
+#
+# environment: demo
+#   Indicates this is a demonstration environment, not production.
+#
+# security-posture: vulnerable
+#   Explicitly marks this namespace as containing intentionally insecure
+#   workloads. In a real environment, this label could trigger alerts.
+#
+# purpose: security-demo
+#   Documents the intent - teaching security concepts.
+#
+# ============================================================================
+
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,3 +101,20 @@ metadata:
     environment: demo
     security-posture: vulnerable
     purpose: security-demo
+    # ========================================================================
+    # MISSING: Pod Security Standards labels
+    # ========================================================================
+    # A secure namespace would include:
+    #
+    # pod-security.kubernetes.io/enforce: restricted
+    # pod-security.kubernetes.io/enforce-version: latest
+    # pod-security.kubernetes.io/audit: restricted
+    # pod-security.kubernetes.io/audit-version: latest
+    # pod-security.kubernetes.io/warn: restricted
+    # pod-security.kubernetes.io/warn-version: latest
+    #
+    # These labels tell Kubernetes to:
+    #   enforce: Block non-compliant pods from being created
+    #   audit: Log violations in audit logs
+    #   warn: Show warnings but allow creation
+    # ========================================================================

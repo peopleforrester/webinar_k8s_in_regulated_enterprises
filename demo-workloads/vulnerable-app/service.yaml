@@ -1,3 +1,117 @@
+# ============================================================================
+# VULNERABLE APPLICATION SERVICE - BASIC EXPOSURE
+# ============================================================================
+#
+# PURPOSE:
+# Exposes the vulnerable application within the cluster. While the Service
+# itself is relatively standard, it's part of a workload that lacks proper
+# security controls.
+#
+# ============================================================================
+# SERVICE SECURITY CONSIDERATIONS
+# ============================================================================
+#
+# This Service configuration is relatively neutral security-wise, but the
+# overall application architecture has these issues:
+#
+# 1. NO NETWORK POLICY:
+#    Without a NetworkPolicy (see compliant-app/networkpolicy.yaml), this
+#    service is accessible from ANY pod in ANY namespace in the cluster.
+#
+#    Attack scenario:
+#    - Attacker compromises any pod in the cluster
+#    - Can reach vulnerable-app on port 80
+#    - Exploits vulnerability in nginx (if one exists)
+#    - Gains root access in privileged container
+#    - Escapes to node
+#
+# 2. PLAIN HTTP (Port 80):
+#    Traffic is unencrypted within the cluster.
+#    - Compliant apps should use HTTPS/TLS even internally
+#    - Consider service mesh (Istio, Linkerd) for mTLS
+#
+# 3. NO INGRESS RESTRICTIONS:
+#    If exposed via Ingress, there's no:
+#    - Rate limiting
+#    - WAF protection
+#    - Client certificate requirements
+#
+# ============================================================================
+# COMPARISON WITH COMPLIANT ARCHITECTURE
+# ============================================================================
+#
+# | Aspect                | Vulnerable App       | Compliant App        |
+# |-----------------------|----------------------|----------------------|
+# | Port                  | 80 (privileged)      | 8080 (unprivileged)  |
+# | Network Policy        | None                 | Strict ingress/egress|
+# | Internal Traffic      | Unencrypted          | Should use mTLS      |
+# | Access Control        | Open to all pods     | Namespace-restricted |
+#
+# ============================================================================
+# PORT 80 VS PORT 8080
+# ============================================================================
+#
+# Privileged Ports (< 1024):
+#   - Require root or CAP_NET_BIND_SERVICE capability
+#   - Historical Unix convention
+#   - The vulnerable app uses port 80 because it runs as root
+#
+# Unprivileged Ports (>= 1024):
+#   - Can be bound by any user
+#   - Required for non-root containers
+#   - The compliant app uses port 8080, mapped to external port 80
+#
+# SECURITY IMPLICATION:
+#   Running on port 80 inside the container requires either:
+#   - Running as root (bad)
+#   - CAP_NET_BIND_SERVICE capability (less bad but still unnecessary)
+#
+#   The compliant approach:
+#   - Run container on 8080 as non-root
+#   - Service maps external 80 -> container 8080
+#
+# ============================================================================
+# NETWORK POLICY THAT SHOULD EXIST
+# ============================================================================
+#
+# This namespace lacks a NetworkPolicy. A secure configuration would include:
+#
+#   apiVersion: networking.k8s.io/v1
+#   kind: NetworkPolicy
+#   metadata:
+#     name: vulnerable-app-netpol
+#     namespace: vulnerable-app
+#   spec:
+#     podSelector:
+#       matchLabels:
+#         app: vulnerable-app
+#     policyTypes:
+#       - Ingress
+#       - Egress
+#     ingress:
+#       - from:
+#           - namespaceSelector:
+#               matchLabels:
+#                 kubernetes.io/metadata.name: ingress-nginx
+#         ports:
+#           - port: 80
+#     egress:
+#       - to:
+#           - namespaceSelector:
+#               matchLabels:
+#                 kubernetes.io/metadata.name: kube-system
+#         ports:
+#           - port: 53
+#             protocol: UDP
+#
+# Without this, the vulnerable app can:
+#   - Receive connections from any pod in the cluster
+#   - Make outbound connections to any destination (data exfiltration)
+#   - Access the Kubernetes API server
+#   - Reach cloud metadata endpoints (e.g., 169.254.169.254)
+#
+# ============================================================================
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,11 +121,19 @@ metadata:
     app: vulnerable-app
     environment: demo
 spec:
+  # ClusterIP is the default, only accessible within cluster
+  # Other types and their security implications:
+  #   NodePort: Exposes on each node's IP (wider attack surface)
+  #   LoadBalancer: Public-facing (requires WAF, DDoS protection)
   type: ClusterIP
   ports:
+    # Mapping port 80 to port 80
+    # The container runs nginx on privileged port 80 (requires root)
     - port: 80
       targetPort: 80
       protocol: TCP
       name: http
   selector:
+    # Selects pods with this label
+    # All matching pods receive traffic (load balanced)
     app: vulnerable-app

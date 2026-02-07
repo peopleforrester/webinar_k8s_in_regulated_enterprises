@@ -1,28 +1,243 @@
-# Trivy Operator Helm Chart Values
+# =============================================================================
+# TRIVY OPERATOR HELM CHART VALUES
+# =============================================================================
+# Tool:    Trivy Operator - Kubernetes Security Scanning Operator
 # Version: 0.29.0 (February 2026)
-# Note: 0.29.0 is the current stable release as of September 2025
+# Repo:    https://github.com/aquasecurity/trivy-operator
+# Docs:    https://aquasecurity.github.io/trivy-operator/
+#
+# PURPOSE:
+# Trivy Operator automates security scanning in Kubernetes by continuously
+# scanning workloads, images, infrastructure, and configurations. It creates
+# Kubernetes Custom Resources (CRs) containing scan results that can be
+# queried via kubectl or consumed by dashboards.
+#
+# CAPABILITIES:
+#   - VULNERABILITY SCANNING: CVE detection in container images
+#   - CONFIG AUDITING: Kubernetes misconfigurations (pod security, RBAC)
+#   - SECRET SCANNING: Exposed credentials in images and manifests
+#   - SBOM GENERATION: Software Bill of Materials for supply chain
+#   - COMPLIANCE: CIS benchmarks, NSA, MITRE frameworks
+#   - RBAC ASSESSMENT: Excessive permissions detection
+#
+# WHY TRIVY FOR REGULATED INDUSTRIES?
+# 1. Comprehensive CVE database with vendor advisories
+# 2. SBOM generation meets supply chain requirements (DORA Article 28)
+# 3. Results as Kubernetes CRs enable GitOps-style compliance
+# 4. Integrates with policy engines (Kyverno, OPA)
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Vulnerability management program"
+#   - OSFI B-13: "Identify and remediate vulnerabilities"
+#   - DORA Article 9: "Vulnerability assessment processes"
+#   - DORA Article 28: "Third-party ICT risk management" (SBOM)
+#   - PCI-DSS 6.1: "Identify security vulnerabilities"
+#
+# ARCHITECTURE:
+# +------------------+     Watch      +------------------+
+# | Trivy Operator   | <------------- | Workloads       |
+# | (Controller)     |                | (Deployments,   |
+# +--------+---------+                | DaemonSets...)  |
+#          |                          +------------------+
+#          | Creates scan jobs
+#          v
+# +------------------+     Scans      +------------------+
+# | Scan Jobs        | -------------> | Container Images |
+# | (Trivy Scanner)  |                | (OCI Registry)   |
+# +--------+---------+                +------------------+
+#          |
+#          | Creates reports
+#          v
+# +------------------+
+# | Custom Resources |
+# | - VulnReport     |
+# | - ConfigAudit    |
+# | - SBOM           |
+# +------------------+
+#
+# VERSION NOTE:
+# 0.29.0 is current stable as of September 2025. Check for updates at:
+# https://github.com/aquasecurity/trivy-operator/releases
+# =============================================================================
 
-# Operator configuration
+# -----------------------------------------------------------------------------
+# OPERATOR CONFIGURATION
+# -----------------------------------------------------------------------------
+# Core settings for the Trivy Operator controller.
+# -----------------------------------------------------------------------------
 operator:
-  # Scan all namespaces
+  # ---------------------------------------------------------------------------
+  # Scan Job Timeout
+  # ---------------------------------------------------------------------------
+  # Maximum time allowed for each scan job to complete.
+  #
+  # 5 MINUTES RATIONALE:
+  # - Most scans complete in 30-120 seconds
+  # - Large images with many packages may take longer
+  # - Very large images (>2GB) may need 10+ minutes
+  #
+  # WHAT HAPPENS ON TIMEOUT?
+  # - Job is marked as Failed
+  # - VulnerabilityReport shows error status
+  # - Operator schedules retry with backoff
+  #
+  # TUNING:
+  # Increase if you see frequent timeout failures for specific images.
+  # Check logs: kubectl logs -n trivy-system -l app=trivy-operator
+  #
+  # REGULATORY CONTEXT (NCUA Appendix B):
+  # "Complete vulnerability assessments" - ensure timeout allows
+  # all images to be scanned successfully.
+  # ---------------------------------------------------------------------------
   scanJobTimeout: 5m
-  # Concurrent scan limit
+
+  # ---------------------------------------------------------------------------
+  # Concurrent Scan Jobs Limit
+  # ---------------------------------------------------------------------------
+  # Maximum number of scan jobs running simultaneously.
+  #
+  # BALANCING ACT:
+  # - Higher: Faster scanning, more resource consumption
+  # - Lower: Slower scanning, less cluster impact
+  #
+  # 10 CONCURRENT JOBS:
+  # - Good balance for medium clusters (50-200 nodes)
+  # - Prevents overwhelming the Kubernetes scheduler
+  # - Limits registry rate limiting issues
+  #
+  # SIZING GUIDANCE:
+  #   Small cluster (<50 nodes):  5 concurrent
+  #   Medium cluster (50-200):    10 concurrent
+  #   Large cluster (200+):       20 concurrent
+  #
+  # PRODUCTION CONSIDERATION:
+  # Monitor registry rate limits. Many registries (DockerHub, ECR)
+  # have request rate limits that affect scan performance.
+  # ---------------------------------------------------------------------------
   concurrentScanJobsLimit: 10
-  # Scan only workloads in specific namespaces (empty = all)
+
+  # ---------------------------------------------------------------------------
+  # Target Namespaces
+  # ---------------------------------------------------------------------------
+  # Limit scanning to specific namespaces. Empty = scan all.
+  #
+  # USE CASES FOR FILTERING:
+  #   - Multi-tenant clusters: Scan only your team's namespaces
+  #   - Phased rollout: Start with non-production namespaces
+  #   - Performance: Reduce load by excluding low-priority namespaces
+  #
+  # SYNTAX:
+  #   "":                    All namespaces (default)
+  #   "app1,app2":           Only these namespaces
+  #   "!kube-system,!trivy": Exclude these (NOT supported, use label selectors)
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Complete asset coverage" - ensure all workloads are scanned.
+  # Filtering should be a temporary measure during rollout.
+  # ---------------------------------------------------------------------------
   targetNamespaces: ""
 
-# Trivy scanner configuration
+# -----------------------------------------------------------------------------
+# TRIVY SCANNER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Settings for the Trivy scanner that runs in scan jobs.
+# -----------------------------------------------------------------------------
 trivy:
-  # Severity levels to report
+  # ---------------------------------------------------------------------------
+  # Severity Levels
+  # ---------------------------------------------------------------------------
+  # Which vulnerability severities to include in reports.
+  #
+  # LEVELS (from CVSS scores):
+  #   CRITICAL: 9.0-10.0 - Actively exploited or trivially exploitable
+  #   HIGH:     7.0-8.9  - Significant impact, exploit may exist
+  #   MEDIUM:   4.0-6.9  - Moderate impact, requires specific conditions
+  #   LOW:      0.1-3.9  - Minor impact, difficult to exploit
+  #   UNKNOWN:  No score - Unscored vulnerability (still may be important)
+  #
+  # WHY INCLUDE ALL?
+  # Regulated environments need complete visibility. A "LOW" vulnerability
+  # combined with another issue may become exploitable.
+  #
+  # FILTERING RECOMMENDATION:
+  # Keep all severities in reports, but ALERT only on HIGH/CRITICAL.
+  # Use Kyverno policies to enforce remediation thresholds.
+  #
+  # REGULATORY CONTEXT (OSFI B-13):
+  # "Prioritize vulnerabilities based on risk"
+  # All severities captured; prioritization done in reporting layer.
+  # ---------------------------------------------------------------------------
   severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
 
-  # Ignore unfixed vulnerabilities in reports
+  # ---------------------------------------------------------------------------
+  # Ignore Unfixed Vulnerabilities
+  # ---------------------------------------------------------------------------
+  # Whether to hide vulnerabilities that have no fix available.
+  #
+  # OPTIONS:
+  #   false: Show all vulnerabilities (RECOMMENDED for compliance)
+  #   true:  Hide vulnerabilities without available fix
+  #
+  # WHY FALSE (SHOW UNFIXED)?
+  # 1. Awareness: Know your complete risk posture
+  # 2. Planning: Track when fixes become available
+  # 3. Compensating controls: May need other mitigations
+  # 4. Compliance: Auditors want complete picture
+  #
+  # WHEN TO SET TRUE:
+  # - Noisy reports distracting from actionable items
+  # - Team only focuses on remediable issues
+  # - Combined with separate tracking for unfixed CVEs
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Risk awareness" - unfixed CVEs represent residual risk that
+  # should be acknowledged and potentially mitigated.
+  # ---------------------------------------------------------------------------
   ignoreUnfixed: false
 
-  # Timeout for each scan
+  # ---------------------------------------------------------------------------
+  # Scan Timeout
+  # ---------------------------------------------------------------------------
+  # Timeout for individual image scans (vs job timeout above).
+  #
+  # This is the timeout for Trivy scanner execution within the job.
+  # Should be less than operator.scanJobTimeout to allow for job
+  # setup/teardown time.
+  #
+  # COMMON TIMEOUT CAUSES:
+  # - Very large images (multi-GB)
+  # - Images with many packages (>1000)
+  # - Slow registry connections
+  # - CVE database download issues
+  # ---------------------------------------------------------------------------
   timeout: 5m0s
 
-  # Resource limits for scan jobs
+  # ---------------------------------------------------------------------------
+  # Scanner Resource Limits
+  # ---------------------------------------------------------------------------
+  # Resources allocated to each scan job pod.
+  #
+  # SIZING RATIONALE:
+  #   requests.cpu: 100m
+  #     - Trivy is mostly I/O bound (downloading, parsing)
+  #     - CPU spikes during package enumeration
+  #
+  #   requests.memory: 100M
+  #     - Minimum for Trivy process and DB
+  #     - May need increase for large images
+  #
+  #   limits.cpu: 500m
+  #     - Allow burst for intensive scanning
+  #     - Prevents monopolizing node resources
+  #
+  #   limits.memory: 500M
+  #     - Large images need more memory
+  #     - Increase if OOMKilled errors occur
+  #
+  # MONITORING:
+  # Check scan job pod events for resource issues:
+  # kubectl get events -n trivy-system --field-selector reason=OOMKilled
+  # ---------------------------------------------------------------------------
   resources:
     requests:
       cpu: 100m
@@ -31,32 +246,223 @@ trivy:
       cpu: 500m
       memory: 500M
 
-# Enable SBOM generation for supply chain compliance
+# -----------------------------------------------------------------------------
+# SBOM GENERATION
+# -----------------------------------------------------------------------------
+# Software Bill of Materials (SBOM) configuration.
+#
+# WHAT IS SBOM?
+# A machine-readable inventory of all software components in an image:
+# - Package names and versions
+# - Libraries and dependencies
+# - Licenses
+# - Source information
+#
+# FORMATS:
+# Trivy generates SBOM in industry-standard formats:
+# - SPDX (ISO/IEC 5962:2021)
+# - CycloneDX (OWASP standard)
+#
+# REGULATORY CONTEXT (DORA Article 28):
+# "Third-party ICT service providers must provide information on
+# their ICT systems and software components"
+# SBOM directly addresses this supply chain transparency requirement.
+#
+# USE CASES:
+# 1. Supply chain security: Know what's in your images
+# 2. License compliance: Detect GPL/restrictive licenses
+# 3. Incident response: Quickly check if you use affected component
+# 4. Vendor management: Verify third-party dependencies
+#
+# US EXECUTIVE ORDER 14028:
+# Federal agencies require SBOM for software procurement.
+# Financial services should align with these standards.
+# -----------------------------------------------------------------------------
 sbomGeneration:
   enabled: true
 
-# Enable vulnerability scanning
+# -----------------------------------------------------------------------------
+# VULNERABILITY SCANNING
+# -----------------------------------------------------------------------------
+# Enable Trivy as the vulnerability scanner (vs external scanner).
+#
+# OPTIONS:
+#   Trivy: Use built-in Trivy scanner (RECOMMENDED)
+#   None:  Disable vulnerability scanning
+#
+# WHY TRIVY?
+# - Comprehensive CVE database (NVD, vendor advisories)
+# - Fast scanning (local DB, no API calls during scan)
+# - Regular updates (DB refreshed automatically)
+# - No external dependencies
+# -----------------------------------------------------------------------------
 vulnerabilityReportsScanner: Trivy
 
-# Enable config audit scanning
+# -----------------------------------------------------------------------------
+# CONFIGURATION AUDIT SCANNING
+# -----------------------------------------------------------------------------
+# Enable scanning for Kubernetes misconfigurations.
+#
+# WHAT IT CHECKS:
+# - Container security context (runAsNonRoot, capabilities)
+# - Resource limits and requests
+# - Pod security standards
+# - RBAC permissions
+# - Network policies
+# - Secret references
+#
+# RESULTS:
+# ConfigAuditReport CRs created per workload with findings.
+#
+# kubectl get configauditreport -A
+# kubectl describe configauditreport <name> -n <namespace>
+#
+# INTEGRATION WITH KYVERNO:
+# Trivy audit + Kyverno policies = defense in depth
+# - Trivy: Reports all issues (advisory)
+# - Kyverno: Blocks specific issues (enforcement)
+#
+# REGULATORY CONTEXT (OSFI E-21):
+# "Configuration management" - audit scanning validates that
+# configurations meet security standards.
+# -----------------------------------------------------------------------------
 configAuditScannerEnabled: true
 
-# Enable exposed secret scanning
+# -----------------------------------------------------------------------------
+# EXPOSED SECRET SCANNING
+# -----------------------------------------------------------------------------
+# Enable detection of exposed secrets in images.
+#
+# WHAT IT DETECTS:
+# - Hardcoded passwords
+# - API keys and tokens
+# - Private keys (SSH, TLS)
+# - Connection strings
+# - Cloud credentials (AWS, Azure, GCP)
+#
+# HOW IT WORKS:
+# Trivy uses regex patterns and entropy analysis to detect
+# secrets embedded in:
+# - Environment variables
+# - Configuration files
+# - Source code (if present in image)
+#
+# FALSE POSITIVES:
+# - High-entropy test data
+# - Example/placeholder values
+# - Base64-encoded non-secrets
+#
+# Use .trivyignore file or annotations to suppress false positives.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Protect authentication credentials"
+# Secret scanning detects exposed credentials before exploitation.
+# -----------------------------------------------------------------------------
 exposedSecretScannerEnabled: true
 
-# Compliance reporting
+# -----------------------------------------------------------------------------
+# COMPLIANCE REPORTING
+# -----------------------------------------------------------------------------
+# Evaluate cluster against compliance frameworks.
+#
+# AVAILABLE SPECS:
+#   k8s-cis-1.10:  CIS Kubernetes Benchmark 1.10 (for K8s 1.30+)
+#   k8s-nsa-1.0:   NSA Kubernetes Hardening Guide
+#   k8s-pss-*:     Pod Security Standards
+#
+# CIS-1.10 vs EARLIER VERSIONS:
+# Version 1.10 includes:
+# - Updated for Kubernetes 1.30/1.31 features
+# - Revised etcd encryption requirements
+# - Updated RBAC best practices
+# - Alignment with current security landscape
+#
+# RESULTS:
+# ClusterComplianceReport CRs show compliance status per control.
+#
+# kubectl get clustercompliancereport
+# kubectl describe clustercompliancereport k8s-cis-1.10
+#
+# REGULATORY CONTEXT (Multiple):
+# - NCUA: References CIS benchmarks as "recognized standard"
+# - OSFI: Accepts CIS as evidence of secure configuration
+# - DORA: "Recognized industry standards and frameworks"
+# -----------------------------------------------------------------------------
 compliance:
-  # CIS Kubernetes Benchmark (updated for K8s 1.30+)
   specs:
     - k8s-cis-1.10
     - k8s-nsa-1.0
 
-# Service Monitor for Prometheus
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Trivy Operator metrics.
+#
+# KEY METRICS:
+#   trivy_image_vulnerabilities:           CVEs by severity
+#   trivy_image_vulnerability_id:          Specific CVE details
+#   trivy_configaudit_info:                Config audit results
+#   trivy_sbom_info:                       SBOM generation status
+#   trivy_vulnerability_database_updated:  DB freshness
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical - Immediate Response):
+#   - New CRITICAL CVE in production namespace
+#   - Exposed secrets detected
+#   - Vulnerability database >24 hours stale
+#
+# P2 (High - Same Day):
+#   - New HIGH CVE detected
+#   - Failed scan jobs
+#   - CIS compliance degradation
+#
+# P3 (Medium - This Week):
+#   - New MEDIUM CVE detected
+#   - Config audit failures increasing
+#   - SBOM generation failures
+#
+# COMPLIANCE DASHBOARD:
+# Consider using Trivy Operator Dashboard or integrating with
+# Policy Reporter for unified compliance visualization.
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Continuous monitoring of security controls"
+# Metrics enable real-time visibility into security posture.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true
 
-# Node collector for infrastructure scanning
+# -----------------------------------------------------------------------------
+# NODE COLLECTOR CONFIGURATION
+# -----------------------------------------------------------------------------
+# Settings for infrastructure/node scanning.
+#
+# WHAT IT SCANS:
+# - Node operating system vulnerabilities
+# - Kubelet configuration
+# - Container runtime settings
+# - File system permissions
+#
+# DEPLOYMENT:
+# Runs as DaemonSet with host access for node scanning.
+# -----------------------------------------------------------------------------
 nodeCollector:
+  # ---------------------------------------------------------------------------
+  # Tolerations
+  # ---------------------------------------------------------------------------
+  # Allow node collector to run on all nodes.
+  #
+  # CRITICAL: Node scanning requires presence on EVERY node.
+  # A node without the collector is a blind spot in your
+  # infrastructure security posture.
+  #
+  # NoSchedule: Run on nodes that normally reject pods
+  #
+  # PRODUCTION:
+  # Add NoExecute toleration for complete coverage during
+  # node maintenance and failure scenarios.
+  # ---------------------------------------------------------------------------
   tolerations:
     - effect: NoSchedule
       operator: Exists

@@ -1,46 +1,383 @@
-# Falcosidekick Helm Chart Values
+# =============================================================================
+# FALCOSIDEKICK HELM CHART VALUES
+# =============================================================================
+# Tool:    Falcosidekick - Falco Alert Router and Forwarder
 # Version: 2.30.x (February 2026)
+# Repo:    https://github.com/falcosecurity/falcosidekick
+# Docs:    https://github.com/falcosecurity/falcosidekick/blob/master/docs/outputs
+#
+# PURPOSE:
+# Falcosidekick receives security alerts from Falco and routes them to
+# 60+ destinations including:
+#   - Messaging: Slack, Teams, Discord, Mattermost
+#   - SIEM: Elasticsearch, Splunk, Azure Sentinel, Datadog
+#   - Cloud: AWS (SNS, SQS, Lambda), Azure (Event Hub, Sentinel), GCP (Pub/Sub)
+#   - Incident: PagerDuty, Opsgenie, VictorOps
+#   - Storage: Kafka, NATS, Redis, Loki
+#   - Custom: Webhooks, SMTP, Syslog
+#
+# WHY FALCOSIDEKICK?
+# 1. Decouples Falco from alert destinations
+# 2. Supports multiple outputs simultaneously
+# 3. Adds metadata enrichment (Kubernetes context)
+# 4. Provides filtering by priority/rule
+# 5. Includes web UI for alert visualization
+#
+# ARCHITECTURE:
+# +--------+     HTTP/gRPC     +---------------+     Multiple      +----------+
+# | Falco  | ---------------> | Falcosidekick | ----------------> | Outputs  |
+# +--------+                   +-------+-------+                   +----------+
+#                                      |                           | - Slack
+#                                      |                           | - SIEM
+#                                      v                           | - Webhook
+#                              +---------------+                   | - etc.
+#                              | Sidekick UI   |
+#                              | (Optional)    |
+#                              +---------------+
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Security alerts must reach appropriate personnel"
+#   - OSFI B-13: "Incident notification and escalation"
+#   - DORA Article 15: "ICT-related incident notification"
+#   - PCI-DSS 10.5: "Secure audit trails"
+#
+# INTEGRATION PATTERN:
+# Falco -> Falcosidekick -> SIEM (primary) + Slack (secondary)
+# This ensures alerts are both archived (SIEM) and actionable (Slack).
+# =============================================================================
 
-# Enable the Falcosidekick UI
+# -----------------------------------------------------------------------------
+# WEB UI CONFIGURATION
+# -----------------------------------------------------------------------------
+# Falcosidekick includes an optional web UI for real-time alert visualization.
+# -----------------------------------------------------------------------------
 webui:
+  # ---------------------------------------------------------------------------
+  # Enable Web UI
+  # ---------------------------------------------------------------------------
+  # The web UI provides:
+  # - Real-time alert stream visualization
+  # - Alert filtering and search
+  # - Priority-based color coding
+  # - Alert details with Kubernetes context
+  #
+  # USE CASES:
+  #   - Demo/training environments (quick visibility)
+  #   - SOC secondary display (alongside SIEM)
+  #   - Debugging alert routing issues
+  #
+  # PRODUCTION CONSIDERATION:
+  # The UI is useful but should NOT replace a proper SIEM.
+  # It lacks:
+  #   - Long-term storage
+  #   - Advanced correlation
+  #   - Audit trail
+  #   - Role-based access control
+  #
+  # ACCESS:
+  # kubectl port-forward svc/falcosidekick-ui 2802:2802 -n falco-system
+  # Then open http://localhost:2802
+  # ---------------------------------------------------------------------------
   enabled: true
-  replicas: 1
-  redis:
-    storageEnabled: false
 
-# Configuration for output destinations
+  # ---------------------------------------------------------------------------
+  # Replicas
+  # ---------------------------------------------------------------------------
+  # Number of UI replicas for high availability.
+  #
+  # Single replica is sufficient for:
+  #   - Demo/dev environments
+  #   - Non-critical visualization
+  #
+  # For production HA, increase to 2+ and add PodDisruptionBudget.
+  # ---------------------------------------------------------------------------
+  replicas: 1
+
+  # ---------------------------------------------------------------------------
+  # Redis Configuration
+  # ---------------------------------------------------------------------------
+  # The UI uses Redis for state management (alert storage, pub/sub).
+  #
+  # storageEnabled: false
+  #   - Redis runs in ephemeral mode
+  #   - Alerts are lost on pod restart
+  #   - Suitable for demo/dev
+  #
+  # storageEnabled: true (PRODUCTION)
+  #   - Redis uses PVC for persistence
+  #   - Alerts survive pod restarts
+  #   - Requires storage class
+  #
+  # IMPORTANT: Redis is a UI backend, NOT an audit trail.
+  # Configure proper SIEM output for compliance requirements.
+  # ---------------------------------------------------------------------------
+  redis:
+    storageEnabled: false  # Enable in production for persistence
+
+# -----------------------------------------------------------------------------
+# OUTPUT CONFIGURATION
+# -----------------------------------------------------------------------------
+# Define where Falcosidekick sends alerts.
+# Multiple outputs can be enabled simultaneously.
+# -----------------------------------------------------------------------------
 config:
-  # Minimum priority to forward
+  # ---------------------------------------------------------------------------
+  # Custom Fields
+  # ---------------------------------------------------------------------------
+  # Additional metadata added to every alert.
+  #
+  # FORMAT: key1:value1,key2:value2
+  #
+  # RECOMMENDED FIELDS:
+  #   environment: Distinguish prod/staging/dev
+  #   cluster:     Identify source cluster in multi-cluster setups
+  #   team:        Route to owning team
+  #   region:      Geographic context
+  #
+  # USAGE IN DOWNSTREAM:
+  # These fields appear in alert payloads and can be used for:
+  #   - SIEM filtering
+  #   - Alert routing
+  #   - Dashboard filtering
+  #   - Incident attribution
+  #
+  # REGULATORY CONTEXT (DORA Article 15):
+  # "Incidents shall be classified and categorized"
+  # Custom fields enable proper classification and routing.
+  # ---------------------------------------------------------------------------
   customfields: "environment:demo,cluster:aks-regulated-demo"
+
+  # ---------------------------------------------------------------------------
+  # Mutual TLS Files Path
+  # ---------------------------------------------------------------------------
+  # Path to mTLS certificates for secure output connections.
+  #
+  # Required when outputs require client certificate authentication:
+  #   - Enterprise SIEM with mTLS
+  #   - Internal Kafka with mTLS
+  #   - Zero-trust network webhooks
+  #
+  # FILES EXPECTED:
+  #   <path>/client.crt: Client certificate
+  #   <path>/client.key: Client private key
+  #   <path>/ca.crt:     CA certificate for server verification
+  #
+  # MOUNT VIA SECRET:
+  # Create a secret and mount at this path in the deployment.
+  # ---------------------------------------------------------------------------
   mutualtlsfilespath: ""
 
-  # Slack output (configure your webhook URL)
+  # ---------------------------------------------------------------------------
+  # SLACK OUTPUT
+  # ---------------------------------------------------------------------------
+  # Send alerts to Slack channels for real-time team notification.
+  #
+  # SETUP STEPS:
+  # 1. Create Slack App: https://api.slack.com/apps
+  # 2. Enable "Incoming Webhooks"
+  # 3. Add webhook to target channel
+  # 4. Copy webhook URL (keep secret!)
+  #
+  # SECURITY WARNING:
+  # Webhook URLs are secrets - anyone with the URL can post messages.
+  # Store in Kubernetes Secret, not in values.yaml.
+  #
+  # PRODUCTION SETUP:
+  # 1. Create secret: kubectl create secret generic slack-webhook \
+  #      --from-literal=url=https://hooks.slack.com/... -n falco-system
+  # 2. Reference in values: webhookurl: $(SLACK_WEBHOOK_URL)
+  # 3. Mount secret as env var
+  #
+  # outputformat OPTIONS:
+  #   all:   Rich formatting with all event fields
+  #   text:  Simple text message
+  #   fields: Slack fields format
+  #
+  # minimumpriority OPTIONS:
+  #   emergency, alert, critical, error, warning, notice, informational, debug
+  #
+  # PRODUCTION RECOMMENDATION:
+  # - Use "warning" for security channels (reduces noise)
+  # - Use "critical" for pager integration
+  # - Create separate channels for different priorities
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Timely notification of security events"
+  # Slack enables immediate team awareness.
+  # ---------------------------------------------------------------------------
   slack:
-    webhookurl: ""
+    webhookurl: ""  # Set via Kubernetes Secret, NOT here
     outputformat: "all"
     minimumpriority: "warning"
 
-  # Azure Event Hub (for SIEM integration)
+  # ---------------------------------------------------------------------------
+  # AZURE EVENT HUB OUTPUT
+  # ---------------------------------------------------------------------------
+  # Send alerts to Azure Event Hub for SIEM integration.
+  #
+  # INTEGRATION TARGETS:
+  #   - Microsoft Sentinel (native Event Hub integration)
+  #   - Splunk (via Event Hub connector)
+  #   - Custom analytics (Azure Stream Analytics, Databricks)
+  #
+  # WHY EVENT HUB?
+  # - Native Azure service (no external dependencies)
+  # - High throughput (millions of events/second)
+  # - Built-in retention (up to 7 days)
+  # - Integrates with Azure security services
+  #
+  # SETUP:
+  # 1. Create Event Hub namespace in Azure
+  # 2. Create Event Hub (topic) named "falco-alerts"
+  # 3. Create SAS policy with "Send" permission
+  # 4. Get connection string
+  # 5. Configure namespace/name below
+  #
+  # AUTHENTICATION:
+  # Supports:
+  #   - Connection string (SAS token)
+  #   - Managed Identity (RECOMMENDED for AKS)
+  #   - Service Principal
+  #
+  # MANAGED IDENTITY SETUP (AKS):
+  # 1. Enable pod identity or workload identity on AKS
+  # 2. Create identity with Event Hub Data Sender role
+  # 3. Configure Falcosidekick to use managed identity
+  #
+  # REGULATORY CONTEXT (DORA Article 12):
+  # "ICT-related incidents shall be logged and documented"
+  # Event Hub + Sentinel provides compliant incident logging.
+  # ---------------------------------------------------------------------------
   azure:
     eventHub:
-      namespace: ""
-      name: ""
+      namespace: ""  # Event Hub namespace name
+      name: ""       # Event Hub (topic) name
       minimumpriority: "warning"
 
-  # Elasticsearch output
+  # ---------------------------------------------------------------------------
+  # ELASTICSEARCH OUTPUT
+  # ---------------------------------------------------------------------------
+  # Send alerts to Elasticsearch for search and analytics.
+  #
+  # USE CASES:
+  #   - Centralized logging (ELK/EFK stack)
+  #   - Alert correlation and analysis
+  #   - Long-term archival
+  #   - Kibana dashboards
+  #
+  # INDEX NAMING:
+  # Default index: falco-alerts
+  #
+  # Consider date-based indices for lifecycle management:
+  #   falco-alerts-2026.02.06
+  #
+  # Use Index Lifecycle Management (ILM) for:
+  #   - Automatic rollover
+  #   - Hot/warm/cold tiering
+  #   - Retention enforcement
+  #
+  # AUTHENTICATION:
+  # Configure via additional settings (not shown):
+  #   - username/password
+  #   - API key
+  #   - AWS IAM (for OpenSearch)
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Retain security logs for appropriate period"
+  # Elasticsearch with ILM enables compliant retention.
+  # ---------------------------------------------------------------------------
   elasticsearch:
-    hostport: ""
+    hostport: ""  # e.g., "https://elasticsearch.logging:9200"
     index: "falco-alerts"
     type: "_doc"
     minimumpriority: "notice"
 
-  # Webhook for custom integrations
+  # ---------------------------------------------------------------------------
+  # WEBHOOK OUTPUT
+  # ---------------------------------------------------------------------------
+  # Send alerts to arbitrary HTTP endpoints.
+  #
+  # USE CASES:
+  #   - Custom automation platforms
+  #   - Ticketing systems (ServiceNow, Jira)
+  #   - Internal security tools
+  #   - Lambda/Functions triggers
+  #   - Falco Talon (automated response)
+  #
+  # PAYLOAD FORMAT (JSON):
+  # {
+  #   "uuid": "...",
+  #   "output": "Terminal shell in container...",
+  #   "priority": "Warning",
+  #   "rule": "Terminal shell in container",
+  #   "time": "2026-02-06T10:15:30Z",
+  #   "output_fields": {
+  #     "container.id": "abc123",
+  #     "container.name": "nginx",
+  #     "k8s.ns.name": "production",
+  #     "k8s.pod.name": "nginx-xyz"
+  #   },
+  #   "tags": ["shell", "container", "mitre_execution"],
+  #   "custom_fields": {
+  #     "environment": "demo",
+  #     "cluster": "aks-regulated-demo"
+  #   }
+  # }
+  #
+  # MUTUAL TLS:
+  # Enable for enterprise environments requiring client certificates.
+  # Set mutualtls: true and configure mutualtlsfilespath above.
+  #
+  # AUTHENTICATION:
+  # For authenticated webhooks, configure headers (not shown):
+  #   headers:
+  #     Authorization: "Bearer <token>"
+  #
+  # REGULATORY CONTEXT (OSFI B-13):
+  # "Integrate security monitoring with incident management"
+  # Webhooks enable custom integration with existing processes.
+  # ---------------------------------------------------------------------------
   webhook:
-    address: ""
+    address: ""  # e.g., "https://security-automation.internal/falco"
     minimumpriority: "warning"
     mutualtls: false
 
-# Resources
+# -----------------------------------------------------------------------------
+# RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Resource limits for Falcosidekick pods.
+#
+# SIZING RATIONALE:
+# Falcosidekick is an event router - lightweight and I/O bound.
+#
+#   requests.cpu: 50m
+#     - Mostly waiting for events
+#     - Low baseline is appropriate
+#
+#   requests.memory: 64Mi
+#     - Minimal state (mostly stateless)
+#     - Buffer for output queues
+#
+#   limits.cpu: 200m
+#     - Allows burst during high event volume
+#     - Prevents runaway from impacting cluster
+#
+#   limits.memory: 128Mi
+#     - Headroom for large event batches
+#     - Increase if OOM errors during spikes
+#
+# SCALING:
+# For high-volume environments (>1000 events/minute):
+# - Increase limits
+# - Add replicas with load balancing
+# - Consider separate instances for different output priorities
+#
+# MONITORING:
+# Watch these metrics to validate sizing:
+#   - falcosidekick_outputs_count: Events by output
+#   - falcosidekick_outputs_errors: Failed deliveries
+#   - Container memory/CPU usage
+# -----------------------------------------------------------------------------
 resources:
   requests:
     cpu: 50m
@@ -49,6 +386,39 @@ resources:
     cpu: 200m
     memory: 128Mi
 
-# Prometheus metrics
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Falcosidekick metrics.
+#
+# KEY METRICS:
+#   falcosidekick_inputs_total:        Total events received from Falco
+#   falcosidekick_outputs_total:       Total events sent by output
+#   falcosidekick_outputs_errors:      Failed output attempts
+#   falcosidekick_outputs_latency:     Output delivery latency
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical - Alert routing is broken):
+#   - falcosidekick_outputs_errors increasing rapidly
+#   - falcosidekick_inputs_total = 0 for extended period
+#   - Sidekick pod not running
+#
+# P2 (Warning - Investigate soon):
+#   - falcosidekick_outputs_latency > 5s
+#   - Output error rate > 5%
+#   - Memory approaching limits
+#
+# DASHBOARD:
+# Create Grafana dashboard showing:
+#   - Events received vs delivered (should be equal)
+#   - Events by priority
+#   - Output latency percentiles
+#   - Error rate by output destination
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Verify that security events are processed correctly"
+# Metrics provide evidence of alert delivery effectiveness.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true

@@ -1,3 +1,105 @@
+# ============================================================================
+# KYVERNO POLICY: Require Read-Only Root Filesystem
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# By default, containers have a writable root filesystem. This allows attackers
+# who gain code execution to:
+#
+#   1. INSTALL MALWARE: Write backdoors, rootkits, or cryptominers
+#   2. MODIFY BINARIES: Replace legitimate binaries with malicious versions
+#   3. PERSIST ACCESS: Create cron jobs, startup scripts, or SSH keys
+#   4. HIDE ACTIVITY: Modify logs or create hidden files
+#   5. STAGE ATTACKS: Download tools for privilege escalation
+#
+# A read-only root filesystem is a DEFENSE IN DEPTH measure that limits what
+# an attacker can do AFTER achieving initial access.
+#
+# TECHNICAL BACKGROUND:
+# ---------------------
+# When readOnlyRootFilesystem: true is set:
+#   - Container's root filesystem is mounted read-only
+#   - Any write to /, /usr, /bin, /etc, etc. returns EROFS (read-only filesystem)
+#   - Explicit mounts (emptyDir, configMap, secret) remain writable
+#   - tmpfs mounts (/dev, /proc special filesystems) work normally
+#
+# What still works:
+#   - Writing to mounted volumes (emptyDir, persistentVolumeClaim)
+#   - Writing to /dev/stdout, /dev/stderr (for logging)
+#   - Writing to /tmp if mounted as emptyDir
+#   - Memory-mapped files (depending on mount configuration)
+#
+# What breaks:
+#   - Package managers (apt, yum) - shouldn't run in production anyway
+#   - Applications that write to their install directory
+#   - Poorly designed apps that assume writable /var or /etc
+#
+# HOW ATTACKERS EXPLOIT WRITABLE FILESYSTEMS:
+# -------------------------------------------
+# Attack Scenario 1: Webshell Installation
+#   1. Attacker exploits file upload vulnerability in web application
+#   2. Uploads PHP/JSP/ASP webshell to /var/www/html
+#   3. Webshell provides persistent backdoor access
+#   4. Read-only rootfs: Upload fails with "Read-only file system" error
+#
+# Attack Scenario 2: Binary Replacement
+#   1. Attacker exploits application vulnerability
+#   2. Downloads malicious curl/wget to /tmp
+#   3. Replaces /usr/bin/curl with malicious version (catches credentials)
+#   4. Read-only rootfs: Cannot overwrite system binaries
+#
+# Attack Scenario 3: Cryptominer Installation
+#   1. Attacker exploits Log4j vulnerability (or similar RCE)
+#   2. Downloads xmrig cryptominer to /tmp
+#   3. Writes to /etc/cron.d to ensure persistence
+#   4. Miner runs on container's CPU allocation
+#   5. Read-only rootfs: Cron persistence fails, miner must re-exploit
+#
+# Attack Scenario 4: Credential Theft via Binary Modification
+#   1. Attacker gains shell access to container
+#   2. Modifies /etc/nsswitch.conf to intercept authentication
+#   3. Creates malicious /lib/libnss_*.so that logs credentials
+#   4. Captures all authentication attempts
+#   5. Read-only rootfs: Cannot modify system configuration
+#
+# Attack Scenario 5: Log Tampering
+#   1. Attacker compromises application
+#   2. Modifies application logs to hide intrusion evidence
+#   3. Forensics team cannot determine attack timeline
+#   4. Read-only rootfs: Log files in /var/log are protected
+#      (Note: Logs to stdout/stderr go to node, not container filesystem)
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Container Hardening
+#   - Requirement: "Security configurations should minimize attack surface
+#     and prevent unauthorized modifications to systems"
+#   - Read-only filesystem prevents runtime modification
+#
+# OSFI B-13 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 4.3: System Hardening
+#   - Requirement: "Technology assets should be hardened according to
+#     industry-accepted standards and benchmarks"
+#   - CIS Docker Benchmark recommends read-only root filesystem
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 9(2): Protection and Prevention
+#   - Requirement: "Preventive measures against ICT risks including
+#     measures for protection against unauthorized access"
+#   - Read-only filesystem prevents malicious file creation
+#
+# CIS Docker Benchmark:
+#   - 5.12: Ensure the container's root filesystem is mounted as read only
+#   - Level 1 - Scored control
+#
+# CIS Kubernetes Benchmark:
+#   - 5.2.4: Minimize the admission of containers with readOnlyRootFilesystem false
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -16,10 +118,50 @@ metadata:
     compliance.regulated/osfi-b13: "OSFI B-13 Section 4.3 - System Hardening"
     compliance.regulated/dora: "DORA Article 9(2) - Protection and Prevention"
 spec:
-  # Audit mode - many applications need writable /tmp
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Audit (Not Enforce)
+  # ===========================================================================
+  # WHY AUDIT MODE?
+  # ---------------
+  # This policy is set to Audit because:
+  #
+  #   1. APPLICATION COMPATIBILITY: Many applications expect to write to
+  #      directories like /tmp, /var/cache, /var/log. Without proper volume
+  #      configuration, they will fail immediately.
+  #
+  #   2. GRADUAL ADOPTION: Teams need time to:
+  #      - Identify which directories their apps write to
+  #      - Add emptyDir volumes for those directories
+  #      - Test application behavior with read-only filesystem
+  #
+  #   3. THIRD-PARTY IMAGES: Many vendor images assume writable filesystem.
+  #      Enforcing immediately would break these deployments.
+  #
+  #   4. VISIBILITY FIRST: Audit mode generates reports showing which pods
+  #      would fail, giving teams a remediation roadmap.
+  #
+  # WHEN TO ENFORCE:
+  # ----------------
+  # Switch to Enforce when:
+  #   - Policy reports show minimal violations
+  #   - Teams have configured emptyDir volumes for write paths
+  #   - Third-party images have been tested or replaced
+  #   - Staging environment has validated enforcement
+  #
+  # ENFORCEMENT TIMELINE RECOMMENDATION:
+  # ------------------------------------
+  # Week 1-2:  Deploy in Audit mode, analyze reports
+  # Week 3-4:  Teams remediate their applications
+  # Week 5-6:  Test in staging with Enforce mode
+  # Week 7+:   Enforce in production
+  # ===========================================================================
   validationFailureAction: Audit
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Require Read-Only Root Filesystem for Regular Containers
+    # =========================================================================
     - name: require-readonly-rootfs-containers
       match:
         any:
@@ -30,9 +172,16 @@ spec:
         any:
           - resources:
               namespaces:
+                # System namespaces excluded because core components may
+                # need to write to filesystem for legitimate operations
                 - kube-system
                 - kube-node-lease
                 - kube-public
+                # Security tools may need writable filesystem for:
+                # - kyverno: Webhook certificates, policy compilation
+                # - falco: Rule updates, eBPF programs
+                # - trivy: Vulnerability database cache
+                # - kubescape: Scan results, temporary files
                 - kyverno
                 - falco
                 - trivy-system
@@ -43,11 +192,24 @@ spec:
           NCUA Container Hardening, OSFI B-13 Section 4.3,
           DORA Article 9(2). Set securityContext.readOnlyRootFilesystem
           to true and use emptyDir volumes for writable directories.
+        # ---------------------------------------------------------------------
+        # PATTERN EXPLAINED:
+        # ---------------------------------------------------------------------
+        # This pattern REQUIRES readOnlyRootFilesystem: true
+        # The securityContext must be present and the field must be true.
+        #
+        # Unlike anchored patterns (which check "if present, must match"),
+        # this pattern requires the field to exist and be true.
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
               - securityContext:
                   readOnlyRootFilesystem: true
+
+    # =========================================================================
+    # RULE 2: Require Read-Only Root Filesystem for Init Containers
+    # =========================================================================
     - name: require-readonly-rootfs-init-containers
       match:
         any:
@@ -78,3 +240,221 @@ spec:
             initContainers:
               - securityContext:
                   readOnlyRootFilesystem: true
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes (In Enforce Mode)
+# ============================================================================
+#
+# BLOCKED (Audit mode: generates policy report violation)
+# --------------------------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       # <-- BLOCKED: No securityContext, defaults to writable
+#
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         readOnlyRootFilesystem: false  # <-- BLOCKED: Explicitly writable
+#
+# PASSES
+# ------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         readOnlyRootFilesystem: true   # <-- PASSES
+#
+# # Complete example with writable volumes:
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         readOnlyRootFilesystem: true
+#       volumeMounts:
+#         - name: tmp
+#           mountPath: /tmp
+#         - name: cache
+#           mountPath: /var/cache/nginx
+#         - name: run
+#           mountPath: /var/run
+#   volumes:
+#     - name: tmp
+#       emptyDir: {}
+#     - name: cache
+#       emptyDir: {}
+#     - name: run
+#       emptyDir: {}
+#
+# ============================================================================
+# COMMON APPLICATIONS AND REQUIRED VOLUMES
+# ============================================================================
+#
+# NGINX:
+# ------
+# volumeMounts:
+#   - mountPath: /var/cache/nginx
+#   - mountPath: /var/run
+#   - mountPath: /tmp
+#
+# JAVA APPLICATIONS:
+# ------------------
+# volumeMounts:
+#   - mountPath: /tmp        # JVM temp files, heap dumps
+#
+# PYTHON APPLICATIONS:
+# --------------------
+# volumeMounts:
+#   - mountPath: /tmp        # Various temp files
+#   - mountPath: /.cache     # pip cache (if applicable)
+#
+# NODE.JS APPLICATIONS:
+# ---------------------
+# volumeMounts:
+#   - mountPath: /tmp
+#   - mountPath: /home/node/.npm  # npm cache (if using npm at runtime)
+#
+# POSTGRES:
+# ---------
+# volumeMounts:
+#   - mountPath: /var/lib/postgresql/data  # Use PVC for this
+#   - mountPath: /var/run/postgresql
+#   - mountPath: /tmp
+#
+# REDIS:
+# ------
+# volumeMounts:
+#   - mountPath: /data       # Use PVC for persistence
+#   - mountPath: /tmp
+#
+# ============================================================================
+# REMEDIATION GUIDANCE
+# ============================================================================
+#
+# Step 1: Identify write paths in your application
+# -------------------------------------------------
+# Option A: Check application documentation
+#   - Most applications document data/log/cache directories
+#
+# Option B: Test in Docker
+#   $ docker run --read-only your-image:tag
+#   # Application will fail with "Read-only file system" errors
+#   # showing which paths need to be writable
+#
+# Option C: Use strace (advanced)
+#   $ strace -f -e trace=open,openat,write your-application 2>&1 | grep -v ENOENT
+#
+# Step 2: Add emptyDir volumes for each write path
+# -------------------------------------------------
+# spec:
+#   containers:
+#     - name: app
+#       volumeMounts:
+#         - name: tmp
+#           mountPath: /tmp
+#         - name: app-cache
+#           mountPath: /app/cache
+#   volumes:
+#     - name: tmp
+#       emptyDir: {}
+#     - name: app-cache
+#       emptyDir: {}
+#
+# Step 3: Consider volume sizing for emptyDir
+# -------------------------------------------
+# By default, emptyDir uses node's ephemeral storage (can fill disk).
+# For production, consider setting sizeLimit:
+#
+#   volumes:
+#     - name: tmp
+#       emptyDir:
+#         sizeLimit: 100Mi     # Limit to 100 MiB
+#
+# Or use memory-backed emptyDir (faster but uses RAM):
+#   volumes:
+#     - name: tmp
+#       emptyDir:
+#         medium: Memory
+#         sizeLimit: 50Mi
+#
+# Step 4: Enable readOnlyRootFilesystem
+# -------------------------------------
+# spec:
+#   containers:
+#     - name: app
+#       securityContext:
+#         readOnlyRootFilesystem: true
+#
+# Step 5: Test thoroughly before production
+# -----------------------------------------
+# - Test all application functionality
+# - Check logs for "Read-only file system" errors
+# - Verify application data persists correctly (if using PVCs)
+# - Load test to ensure emptyDir volumes handle traffic
+#
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+#
+# ERROR: "Read-only file system" at startup
+# SOLUTION: Application needs writable directory. Add emptyDir mount.
+#
+# ERROR: Container crashes immediately
+# SOLUTION: Application may need PID file. Add emptyDir for /var/run.
+#
+# ERROR: "Cannot create temp file"
+# SOLUTION: Mount emptyDir at /tmp.
+#
+# ERROR: Log file cannot be created
+# SOLUTION: Configure app to log to stdout/stderr instead of files.
+#           This is the Kubernetes best practice for logging anyway.
+#
+# ERROR: Session files cannot be written
+# SOLUTION: Use Redis/Memcached for sessions instead of local files.
+#           This also enables horizontal scaling.
+#
+# ============================================================================
+# RELATED SECURITY CONTROLS
+# ============================================================================
+#
+# For comprehensive container hardening, combine with:
+#
+# 1. REQUIRE RUN AS NON-ROOT
+#    - Prevents root user in container
+#    - Even if attacker writes to mounted volume, limited by non-root perms
+#
+# 2. DROP ALL CAPABILITIES
+#    securityContext:
+#      capabilities:
+#        drop: ["ALL"]
+#
+# 3. NO PRIVILEGE ESCALATION
+#    securityContext:
+#      allowPrivilegeEscalation: false
+#
+# 4. SECCOMP PROFILE
+#    securityContext:
+#      seccompProfile:
+#        type: RuntimeDefault
+#
+# Complete hardened container example:
+# ------------------------------------
+# containers:
+#   - name: app
+#     image: app:1.0@sha256:abc123...
+#     securityContext:
+#       readOnlyRootFilesystem: true
+#       runAsNonRoot: true
+#       runAsUser: 1000
+#       allowPrivilegeEscalation: false
+#       capabilities:
+#         drop: ["ALL"]
+#       seccompProfile:
+#         type: RuntimeDefault
+#
+# ============================================================================

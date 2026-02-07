@@ -1,3 +1,121 @@
+# ============================================================================
+# COMPLIANT APPLICATION SERVICE - SECURE EXPOSURE
+# ============================================================================
+#
+# PURPOSE:
+# Exposes the compliant application within the cluster using best practices.
+# This Service works in conjunction with the NetworkPolicy to provide
+# controlled, secure access to the application.
+#
+# ============================================================================
+# SERVICE SECURITY CONSIDERATIONS
+# ============================================================================
+#
+# While Services themselves don't have extensive security settings, they're
+# part of a secure architecture when combined with:
+#
+# 1. NetworkPolicies that restrict which pods can reach this Service
+# 2. Proper port mapping (privileged port externally, unprivileged internally)
+# 3. HTTPS/TLS for encrypted traffic
+# 4. Ingress controllers with security features
+#
+# ============================================================================
+# PORT MAPPING EXPLAINED
+# ============================================================================
+#
+# This Service maps:
+#   External port 80  ->  Container port 8080
+#
+# WHY THIS PATTERN:
+#
+# | Port Type      | Port Number | Requires Root? | Used By          |
+# |----------------|-------------|----------------|------------------|
+# | Privileged     | < 1024      | Yes            | Service (80)     |
+# | Unprivileged   | >= 1024     | No             | Container (8080) |
+#
+# Benefits:
+#   - Container runs as non-root (no special capabilities needed)
+#   - Clients still connect to standard HTTP port (80)
+#   - Standard pattern for containerized web applications
+#
+# The compliant-app Dockerfile configures nginx to listen on 8080:
+#   sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf
+#
+# ============================================================================
+# COMPARISON WITH VULNERABLE APP SERVICE
+# ============================================================================
+#
+# | Aspect                | Vulnerable App       | Compliant App        |
+# |-----------------------|----------------------|----------------------|
+# | Container Port        | 80 (requires root)   | 8080 (unprivileged)  |
+# | Network Policy        | None (open to all)   | Yes (restricted)     |
+# | Security Architecture | Flat (no isolation)  | Defense-in-depth     |
+#
+# ============================================================================
+# NETWORK POLICY INTEGRATION
+# ============================================================================
+#
+# This Service is protected by compliant-app/networkpolicy.yaml which:
+#
+# INGRESS (inbound traffic):
+#   - Only allows traffic from default and kube-system namespaces
+#   - Only allows traffic to port 8080
+#   - Blocks all other inbound traffic
+#
+# EGRESS (outbound traffic):
+#   - Only allows DNS queries (port 53) to kube-system
+#   - Blocks all other outbound traffic
+#   - Prevents data exfiltration
+#
+# Without the NetworkPolicy, this Service would be accessible from any pod
+# in the cluster, creating a larger attack surface.
+#
+# ============================================================================
+# ADVANCED SERVICE SECURITY (PRODUCTION RECOMMENDATIONS)
+# ============================================================================
+#
+# For production regulated environments, consider:
+#
+# 1. Service Mesh (Istio/Linkerd):
+#    - mTLS between all services (encrypted in-cluster traffic)
+#    - Fine-grained authorization policies
+#    - Traffic observability and tracing
+#
+# 2. Ingress Controller Security:
+#    - TLS termination with valid certificates
+#    - Web Application Firewall (WAF)
+#    - Rate limiting and DDoS protection
+#    - Client certificate authentication (mTLS to clients)
+#
+# 3. ExternalName/ExternalIPs:
+#    - Avoid unless absolutely necessary
+#    - Can bypass network policies
+#    - Increases attack surface
+#
+# 4. LoadBalancer Type:
+#    - Use with cloud provider's security features
+#    - Enable security groups/NSGs
+#    - Consider private load balancers for internal services
+#
+# ============================================================================
+# REGULATORY CONSIDERATIONS
+# ============================================================================
+#
+# PCI-DSS:
+#   - 1.2: Build firewall and router configurations (NetworkPolicy)
+#   - 1.3: Prohibit direct public access (ClusterIP + Ingress)
+#   - 4.1: Use strong cryptography (TLS via Ingress or mesh)
+#
+# HIPAA:
+#   - 164.312(e)(1): Transmission security (encrypt in transit)
+#   - 164.312(e)(2): Integrity controls (service mesh verification)
+#
+# SOC 2:
+#   - CC6.6: Prevent unauthorized access (NetworkPolicy)
+#   - CC6.7: Restrict transmission of data (network segmentation)
+#
+# ============================================================================
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,11 +125,106 @@ metadata:
     app: compliant-app
     environment: demo
 spec:
+  # ===========================================================================
+  # SERVICE TYPE: ClusterIP
+  # ===========================================================================
+  # ClusterIP is the most secure type for internal services:
+  #   - Only accessible within the cluster
+  #   - No external IP or node port exposed
+  #   - External access requires Ingress (controlled entry point)
+  #
+  # SERVICE TYPE SECURITY COMPARISON:
+  #
+  # | Type          | Accessibility      | Security Level | Use Case          |
+  # |---------------|--------------------| ---------------|-------------------|
+  # | ClusterIP     | In-cluster only    | Highest        | Internal services |
+  # | NodePort      | Node IPs + port    | Medium         | Dev/testing       |
+  # | LoadBalancer  | External IP        | Lower          | Public services   |
+  # | ExternalName  | DNS alias          | Varies         | External services |
+  #
+  # For production web applications:
+  #   1. Use ClusterIP for the Service
+  #   2. Use Ingress Controller to expose externally
+  #   3. Ingress provides TLS, WAF, rate limiting, etc.
+  # ===========================================================================
   type: ClusterIP
+
   ports:
-    - port: 80
-      targetPort: 8080
+    # =========================================================================
+    # PORT CONFIGURATION
+    # =========================================================================
+    # port: The port clients use to access the service (within cluster)
+    # targetPort: The port the container actually listens on
+    #
+    # This mapping enables:
+    #   - Clients use standard port 80
+    #   - Container runs on unprivileged port 8080
+    #   - No root or capabilities required in container
+    # =========================================================================
+    - port: 80           # External-facing port (what clients connect to)
+      targetPort: 8080   # Container port (unprivileged)
       protocol: TCP
-      name: http
+      name: http         # Named port for clarity and Ingress references
+
+  # ===========================================================================
+  # POD SELECTOR
+  # ===========================================================================
+  # Routes traffic to pods with matching labels.
+  # All pods matching this selector receive traffic (load balanced).
+  #
+  # IMPORTANT: The selector must match the pod labels exactly.
+  # Mismatched selectors mean the Service routes to no pods.
+  #
+  # For the compliant app, pods have labels:
+  #   app: compliant-app
+  #   security-posture: compliant
+  #
+  # We only select on 'app' to allow rolling updates where labels may differ.
+  # ===========================================================================
   selector:
     app: compliant-app
+
+# ============================================================================
+# RELATED RESOURCES
+# ============================================================================
+#
+# This Service should be used with:
+#
+# 1. NetworkPolicy (networkpolicy.yaml):
+#    Controls which pods can reach this Service
+#
+# 2. Ingress (if external access needed):
+#
+#    apiVersion: networking.k8s.io/v1
+#    kind: Ingress
+#    metadata:
+#      name: compliant-app
+#      namespace: compliant-app
+#      annotations:
+#        # TLS settings
+#        nginx.ingress.kubernetes.io/ssl-redirect: "true"
+#        # Rate limiting
+#        nginx.ingress.kubernetes.io/limit-rps: "10"
+#        # Security headers
+#        nginx.ingress.kubernetes.io/configuration-snippet: |
+#          add_header X-Frame-Options "SAMEORIGIN";
+#          add_header X-Content-Type-Options "nosniff";
+#    spec:
+#      ingressClassName: nginx
+#      tls:
+#        - hosts:
+#            - app.example.com
+#          secretName: app-tls-secret
+#      rules:
+#        - host: app.example.com
+#          http:
+#            paths:
+#              - path: /
+#                pathType: Prefix
+#                backend:
+#                  service:
+#                    name: compliant-app
+#                    port:
+#                      number: 80
+#
+# ============================================================================

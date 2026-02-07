@@ -1,5 +1,101 @@
-# Hardened deployment - passes all Kyverno policies
-# Reference implementation for regulated environments
+# ============================================================================
+# COMPLIANT APPLICATION DEPLOYMENT - SECURITY HARDENED
+# ============================================================================
+#
+# PURPOSE:
+# This deployment demonstrates SECURE Kubernetes configurations that satisfy
+# Kyverno policies and regulatory requirements. Use this as a reference
+# implementation for deploying workloads in regulated AKS environments.
+#
+# This configuration passes all Kyverno policies and implements defense-in-depth.
+#
+# ============================================================================
+# SECURITY CONTROLS IMPLEMENTED
+# ============================================================================
+#
+# This deployment implements the following security controls:
+#
+# 1. Pinned Image Version      - Uses nginx:1.25.4 (immutable, auditable)
+# 2. Resource Limits           - CPU: 200m, Memory: 128Mi
+# 3. Non-Privileged Container  - privileged: false
+# 4. Non-Root User             - Runs as UID 101 (nginx user)
+# 5. Read-Only Root Filesystem - Writable dirs via emptyDir volumes
+# 6. No Privilege Escalation   - allowPrivilegeEscalation: false
+# 7. Dropped Capabilities      - ALL capabilities dropped
+# 8. Seccomp Profile           - RuntimeDefault syscall filtering
+# 9. Health Probes             - Liveness and readiness checks
+# 10. Token Disabled           - automountServiceAccountToken: false
+#
+# ============================================================================
+# REGULATORY COMPLIANCE
+# ============================================================================
+#
+# PCI-DSS Compliance:
+#   - 2.2: Develop configuration standards (this is the standard)
+#   - 6.4: Change control procedures (pinned versions)
+#   - 7.1: Limit access to system components (non-root, minimal caps)
+#   - 7.2.2: Restrict based on job function (least privilege)
+#   - 10.5.5: File integrity (read-only filesystem)
+#
+# HIPAA Compliance:
+#   - 164.312(a)(1): Access control mechanisms
+#   - 164.312(e)(1): Transmission security (runs on unprivileged port)
+#
+# SOC 2 Compliance:
+#   - CC6.1: Logical access controls (comprehensive securityContext)
+#   - CC6.6: Security events (health probes enable monitoring)
+#   - CC7.1: Change management (pinned versions, reproducible)
+#
+# NIST 800-53 Compliance:
+#   - AC-6: Least privilege (non-root, dropped capabilities)
+#   - CM-2: Baseline configuration (documented standard)
+#   - CM-6: Configuration settings (explicit security settings)
+#   - SC-6: Resource availability (resource limits)
+#   - SI-7: Software integrity (read-only filesystem)
+#
+# ============================================================================
+# COMPARISON WITH VULNERABLE APP
+# ============================================================================
+#
+# | Security Control          | Vulnerable App       | Compliant App        |
+# |---------------------------|----------------------|----------------------|
+# | Image Tag                 | :latest (mutable)    | :1.25.4 (pinned)     |
+# | Privileged Mode           | true (full access)   | false                |
+# | Run as Root               | Yes (UID 0)          | No (UID 101)         |
+# | Root Filesystem           | Writable             | Read-only            |
+# | Resource Limits           | None (unbounded)     | CPU/Mem limits set   |
+# | Privilege Escalation      | Allowed              | Blocked              |
+# | Linux Capabilities        | Full                 | All dropped          |
+# | Seccomp Profile           | None                 | RuntimeDefault       |
+# | Health Probes             | None                 | Liveness + Readiness |
+# | SA Token Mounted          | Yes (auto)           | No (disabled)        |
+# | Replicas                  | 1 (no HA)            | 2 (fault tolerant)   |
+#
+# ============================================================================
+# KYVERNO POLICIES THIS PASSES
+# ============================================================================
+#
+# 1. disallow-latest-tag
+#    - Image uses explicit version tag (1.25.4)
+#
+# 2. require-resource-limits
+#    - CPU and memory limits explicitly set
+#
+# 3. disallow-privileged-containers
+#    - privileged: false
+#
+# 4. require-run-as-nonroot
+#    - runAsNonRoot: true at pod and container level
+#    - runAsUser: 101 (nginx user)
+#
+# 5. require-readonly-rootfs
+#    - readOnlyRootFilesystem: true
+#
+# 6. Pod Security Standards (Restricted)
+#    - All restricted profile requirements met
+#
+# ============================================================================
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,8 +104,22 @@ metadata:
   labels:
     app: compliant-app
     environment: demo
+    # Label indicates this workload meets security requirements
     security-posture: compliant
 spec:
+  # =========================================================================
+  # HIGH AVAILABILITY
+  # =========================================================================
+  # Running 2 replicas ensures fault tolerance:
+  #   - Pod failure doesn't cause service outage
+  #   - Enables rolling updates without downtime
+  #   - Satisfies availability requirements for production workloads
+  #
+  # For regulated environments, consider:
+  #   - Minimum 2 replicas in production
+  #   - PodDisruptionBudget to prevent all pods being evicted
+  #   - Pod anti-affinity to spread across nodes/zones
+  # =========================================================================
   replicas: 2
   selector:
     matchLabels:
@@ -20,43 +130,296 @@ spec:
         app: compliant-app
         security-posture: compliant
     spec:
+      # =======================================================================
+      # SERVICE ACCOUNT CONFIGURATION
+      # =======================================================================
+      # Uses a dedicated ServiceAccount with minimal permissions.
+      # See serviceaccount.yaml - it has automountServiceAccountToken: false
+      # =======================================================================
       serviceAccountName: compliant-sa
+
+      # =======================================================================
+      # DISABLE SERVICE ACCOUNT TOKEN MOUNTING
+      # =======================================================================
+      # SECURITY CONTROL: Prevents automatic mounting of ServiceAccount token
+      #
+      # WHY THIS MATTERS:
+      # - Most applications don't need to talk to the Kubernetes API
+      # - If container is compromised, attacker can't use SA token for API access
+      # - Defense in depth - even if SA had permissions, token isn't available
+      #
+      # KYVERNO POLICY:
+      #   Policies can enforce automountServiceAccountToken: false
+      #
+      # REGULATORY:
+      #   - PCI-DSS 7.1: Limit access to system components
+      #   - NIST 800-53 AC-6: Least privilege
+      # =======================================================================
       automountServiceAccountToken: false
+
+      # =======================================================================
+      # POD-LEVEL SECURITY CONTEXT
+      # =======================================================================
+      # These settings apply to ALL containers in the pod.
+      # Establishes security baseline before container-specific settings.
+      #
+      # KEY PRINCIPLE: Set restrictive defaults at pod level,
+      # containers can only be MORE restrictive, not less.
+      # =======================================================================
       securityContext:
+        # =====================================================================
+        # SECURITY CONTROL: Run as Non-Root
+        # =====================================================================
+        # Ensures no container can run as root.
+        # Kubernetes will block pod scheduling if any container tries to run as root.
+        #
+        # WHY THIS MATTERS:
+        # - Root in container can exploit kernel vulnerabilities
+        # - Many CVEs require root to exploit
+        # - Container escape is much easier as root
+        #
+        # KYVERNO POLICY: require-run-as-nonroot
+        #
+        # REGULATORY:
+        #   - PCI-DSS 7.2.2: Restrict access based on job function
+        #   - NIST 800-53 AC-6: Least privilege
+        #   - CIS Benchmark 5.2.6: Minimize user privileges
+        # =====================================================================
         runAsNonRoot: true
+
+        # =====================================================================
+        # SECURITY CONTROL: Explicit User ID
+        # =====================================================================
+        # UID 101 is the nginx user in Alpine-based nginx images.
+        # Always use explicit UIDs rather than names for consistency.
+        #
+        # WHY THIS MATTERS:
+        # - Predictable, auditable user context
+        # - UID > 0 ensures non-root
+        # - Matches the USER directive in Dockerfile
+        # =====================================================================
         runAsUser: 101
+
+        # =====================================================================
+        # SECURITY CONTROL: Group ID
+        # =====================================================================
+        # GID 101 is the nginx group.
+        # Setting runAsGroup ensures consistent group ownership.
+        # =====================================================================
         runAsGroup: 101
+
+        # =====================================================================
+        # SECURITY CONTROL: Filesystem Group
+        # =====================================================================
+        # fsGroup sets the group ownership of volume mounts.
+        # Ensures the nginx user can write to mounted volumes.
+        # =====================================================================
         fsGroup: 101
+
+        # =====================================================================
+        # SECURITY CONTROL: Seccomp Profile
+        # =====================================================================
+        # Seccomp (Secure Computing Mode) filters system calls.
+        # RuntimeDefault uses the container runtime's default profile.
+        #
+        # WHY THIS MATTERS:
+        # - Blocks dangerous syscalls (ptrace, mount, reboot, etc.)
+        # - Reduces kernel attack surface
+        # - Prevents many container escape techniques
+        #
+        # PROFILE OPTIONS:
+        #   - Unconfined: No filtering (insecure)
+        #   - RuntimeDefault: Container runtime's default (secure)
+        #   - Localhost: Custom profile from node (most restrictive)
+        #
+        # REGULATORY:
+        #   - NIST 800-53 SC-7: Boundary protection
+        #   - CIS Benchmark 5.7.2: Ensure seccomp profile is set
+        # =====================================================================
         seccompProfile:
           type: RuntimeDefault
+
       containers:
         - name: nginx
-          # Explicit version tag (passes disallow-latest-tag)
+          # =================================================================
+          # SECURITY CONTROL: Pinned Image Version
+          # =================================================================
+          # Uses explicit version tag (1.25.4) instead of :latest.
+          #
+          # WHY THIS MATTERS:
+          # - Reproducible builds and deployments
+          # - Audit trail - know exactly what's running
+          # - Protection against supply chain attacks
+          # - Controlled updates through change management
+          #
+          # EVEN BETTER: Use image digest for immutability:
+          #   image: nginx@sha256:6af79ae5de407283...
+          #
+          # KYVERNO POLICY: disallow-latest-tag
+          #
+          # REGULATORY:
+          #   - PCI-DSS 6.4.3: Track changes to system components
+          #   - NIST 800-53 CM-2: Maintain baseline configurations
+          # =================================================================
           image: nginx:1.25.4
+
           ports:
+            # ================================================================
+            # SECURITY CONTROL: Unprivileged Port
+            # ================================================================
+            # Port 8080 (>1024) doesn't require root or special capabilities.
+            # The Service maps external port 80 to container port 8080.
+            #
+            # WHY THIS MATTERS:
+            # - Allows running as non-root
+            # - No need for CAP_NET_BIND_SERVICE
+            # - Standard pattern for containerized applications
+            # ================================================================
             - containerPort: 8080
               protocol: TCP
-          # Resource limits set (passes require-resource-limits)
+
+          # ==================================================================
+          # SECURITY CONTROL: Resource Limits
+          # ==================================================================
+          # Explicit CPU and memory limits prevent resource exhaustion.
+          #
+          # WHY THIS MATTERS:
+          # - Prevents denial of service (resource exhaustion)
+          # - Ensures fair resource distribution (prevents noisy neighbor)
+          # - Enables cluster autoscaling to work correctly
+          # - Required for Quality of Service (QoS) guarantees
+          #
+          # SIZING GUIDANCE:
+          #   requests: Resources guaranteed to the container
+          #   limits: Maximum resources the container can use
+          #
+          # KYVERNO POLICY: require-resource-limits
+          #
+          # REGULATORY:
+          #   - SOC 2 CC6.1: Logical access controls (resource access)
+          #   - NIST 800-53 SC-6: Resource availability
+          # ==================================================================
           resources:
             requests:
-              cpu: 50m
-              memory: 64Mi
+              cpu: 50m        # 5% of one CPU core
+              memory: 64Mi    # 64 megabytes
             limits:
-              cpu: 200m
-              memory: 128Mi
+              cpu: 200m       # 20% of one CPU core (max)
+              memory: 128Mi   # 128 megabytes (max)
+
           securityContext:
-            # Non-privileged (passes disallow-privileged-containers)
+            # ================================================================
+            # SECURITY CONTROL: Non-Privileged Container
+            # ================================================================
+            # privileged: false ensures no special kernel access.
+            #
+            # WHY THIS MATTERS:
+            # - Privileged containers have full host access
+            # - Can access all devices, load kernel modules
+            # - Container escape is trivial with privileged: true
+            #
+            # KYVERNO POLICY: disallow-privileged-containers
+            #
+            # REGULATORY:
+            #   - PCI-DSS 7.1: Limit access to system components
+            #   - HIPAA 164.312(a): Access control mechanisms
+            # ================================================================
             privileged: false
-            # Non-root (passes require-run-as-nonroot)
+
+            # ================================================================
+            # SECURITY CONTROL: Container-Level Non-Root
+            # ================================================================
+            # Reinforces pod-level setting at container level.
+            # Belt and suspenders approach - defense in depth.
+            # ================================================================
             runAsNonRoot: true
             runAsUser: 101
-            # Read-only root filesystem (passes require-readonly-rootfs)
+
+            # ================================================================
+            # SECURITY CONTROL: Read-Only Root Filesystem
+            # ================================================================
+            # Prevents any writes to the container filesystem.
+            #
+            # WHY THIS MATTERS:
+            # - Attackers can't write malicious binaries
+            # - Prevents malware persistence
+            # - Blocks modification of application code
+            # - Simplifies forensics (known-good state)
+            #
+            # HANDLING WRITABLE DIRECTORIES:
+            # Directories that need writes (tmp, cache, logs) use
+            # emptyDir volumes mounted at specific paths.
+            # These are ephemeral and per-pod.
+            #
+            # KYVERNO POLICY: require-readonly-rootfs
+            #
+            # REGULATORY:
+            #   - PCI-DSS 10.5.5: File integrity monitoring
+            #   - NIST 800-53 SI-7: Software integrity verification
+            # ================================================================
             readOnlyRootFilesystem: true
+
+            # ================================================================
+            # SECURITY CONTROL: No Privilege Escalation
+            # ================================================================
+            # Prevents setuid/setgid binaries from gaining elevated privileges.
+            #
+            # WHY THIS MATTERS:
+            # - Blocks privilege escalation exploits
+            # - Process can't gain more privileges than parent
+            # - Required for restricted Pod Security Standard
+            #
+            # REGULATORY:
+            #   - NIST 800-53 AC-6(1): Authorize specific functions only
+            # ================================================================
             allowPrivilegeEscalation: false
+
+            # ================================================================
+            # SECURITY CONTROL: Drop All Capabilities
+            # ================================================================
+            # Linux capabilities are fine-grained root privileges.
+            # Dropping ALL removes every capability.
+            #
+            # EXAMPLES OF DROPPED CAPABILITIES:
+            #   - CAP_NET_RAW: Craft raw packets (network attacks)
+            #   - CAP_SYS_ADMIN: Mount filesystems, load kernel modules
+            #   - CAP_NET_BIND_SERVICE: Bind to privileged ports
+            #   - CAP_SYS_PTRACE: Debug other processes
+            #   - CAP_CHOWN: Change file ownership
+            #
+            # WHY THIS MATTERS:
+            # - Minimal attack surface
+            # - Even root-like operations are blocked
+            # - Required for restricted Pod Security Standard
+            #
+            # IF YOUR APP NEEDS SPECIFIC CAPABILITIES:
+            # You can add back specific ones:
+            #   capabilities:
+            #     drop: ["ALL"]
+            #     add: ["NET_BIND_SERVICE"]  # Only if truly needed
+            #
+            # REGULATORY:
+            #   - NIST 800-53 AC-6: Least privilege
+            #   - CIS Benchmark 5.2.8: Minimize Linux capabilities
+            # ================================================================
             capabilities:
               drop:
                 - ALL
-          # Writable directories via emptyDir volumes
+
+          # ==================================================================
+          # WRITABLE DIRECTORIES VIA EMPTYDIR VOLUMES
+          # ==================================================================
+          # Since root filesystem is read-only, nginx needs writable dirs for:
+          #   - /tmp: Temporary files
+          #   - /var/cache/nginx: Proxy cache
+          #   - /var/run: PID files and sockets
+          #
+          # emptyDir volumes are:
+          #   - Created when pod starts
+          #   - Deleted when pod is removed
+          #   - Isolated per pod (not shared between pods)
+          #   - Not persistent (data loss on pod restart)
+          # ==================================================================
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -64,18 +427,54 @@ spec:
               mountPath: /var/cache/nginx
             - name: run
               mountPath: /var/run
+
+          # ==================================================================
+          # SECURITY CONTROL: Health Probes
+          # ==================================================================
+          # Liveness and readiness probes enable:
+          #   - Automatic restart of unhealthy containers
+          #   - Removal of unhealthy pods from Service endpoints
+          #   - Graceful rolling updates
+          #
+          # WHY THIS MATTERS FOR SECURITY:
+          #   - Faster detection of compromised containers
+          #   - Automatic recovery from certain attacks
+          #   - Visibility into container health (anomaly detection)
+          #
+          # REGULATORY:
+          #   - SOC 2 CC6.6: Implement security events monitoring
+          #   - Availability requirements in most frameworks
+          # ==================================================================
           livenessProbe:
+            # Checks if the container is alive
+            # If this fails, container is restarted
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 5   # Wait before first check
+            periodSeconds: 10        # Check every 10 seconds
+
           readinessProbe:
+            # Checks if the container is ready to receive traffic
+            # If this fails, pod is removed from Service endpoints
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 5
+            initialDelaySeconds: 3   # Wait before first check
+            periodSeconds: 5         # Check every 5 seconds
+
+      # =======================================================================
+      # EMPTYDIR VOLUMES
+      # =======================================================================
+      # Provides ephemeral, writable storage for directories that need writes.
+      # These volumes are pod-scoped and deleted when the pod terminates.
+      #
+      # SECURITY PROPERTIES:
+      #   - Isolated per pod
+      #   - Not shared with other pods
+      #   - Cleared on pod restart (no persistence for attackers)
+      #   - Subject to fsGroup ownership (nginx can write)
+      # =======================================================================
       volumes:
         - name: tmp
           emptyDir: {}

@@ -1,37 +1,195 @@
-# Falco Production Helm Chart Values
+# =============================================================================
+# FALCO HELM CHART VALUES - PRODUCTION Configuration
+# =============================================================================
+# Tool:    Falco - Cloud-Native Runtime Security
 # Version: 0.43.0 (February 2026)
-# Overrides for production deployments with stricter settings
+# Repo:    https://github.com/falcosecurity/charts
+# Docs:    https://falco.org/docs/
+#
+# PURPOSE:
+# This file contains PRODUCTION-HARDENED overrides for Falco deployment in
+# regulated financial services environments. It inherits from the base
+# values.yaml and overrides settings that require stricter configuration
+# for production workloads.
+#
+# USAGE:
+# Deploy with: helm upgrade -i falco falcosecurity/falco \
+#                -f values.yaml \
+#                -f values-production.yaml \
+#                -n falco-system
+#
+# The -f flags are processed in order, so values-production.yaml overrides
+# values.yaml settings.
+#
+# KEY DIFFERENCES FROM DEMO/DEV:
+# +---------------------------+------------------+------------------+
+# | Setting                   | Demo             | Production       |
+# +---------------------------+------------------+------------------+
+# | gRPC threadiness          | 0 (auto)         | 8 (explicit)     |
+# | Log level                 | info             | warning          |
+# | Event drop threshold      | 10%              | 1%               |
+# | Event drop actions        | log, alert       | log, alert, exit |
+# | CPU request/limit         | 100m/1000m       | 500m/2000m       |
+# | Memory request/limit      | 512Mi/1Gi        | 1Gi/2Gi          |
+# | Priority class            | (none)           | system-node-crit |
+# | NoExecute toleration      | No               | Yes              |
+# +---------------------------+------------------+------------------+
+#
+# REGULATORY CONTEXT:
+# Production deployments in regulated industries must meet:
+#   - NCUA Part 748: Continuous security monitoring without gaps
+#   - OSFI B-13: Resilient security controls
+#   - DORA Article 10: Real-time threat detection
+#   - SOC 2 CC6.1: Logical access security
+# =============================================================================
 
-# Use modern_ebpf driver for production stability
+# -----------------------------------------------------------------------------
+# DRIVER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Production uses modern_ebpf for stability and performance.
+# Do NOT use 'auto' in production - explicit configuration prevents surprises.
+#
+# PRODUCTION CONSIDERATION:
+# Test the driver on your specific kernel version in staging before production.
+# AKS nodes typically run Ubuntu with 5.15+ kernels which support modern_ebpf.
+# -----------------------------------------------------------------------------
 driver:
   kind: modern_ebpf
 
-# Falco configuration
+# -----------------------------------------------------------------------------
+# FALCO CORE CONFIGURATION - PRODUCTION OVERRIDES
+# -----------------------------------------------------------------------------
 falco:
+  # ---------------------------------------------------------------------------
+  # gRPC Server Configuration
+  # ---------------------------------------------------------------------------
+  # PRODUCTION OVERRIDE: Explicit threadiness
+  #
+  # In production, we set explicit thread count instead of auto-detection to:
+  #   1. Ensure consistent, predictable performance
+  #   2. Prevent resource contention during load spikes
+  #   3. Enable accurate capacity planning
+  #
+  # SIZING GUIDANCE:
+  #   - Standard workloads: 4-8 threads
+  #   - High-syscall workloads (databases, AI/ML): 8-16 threads
+  #   - Memory trade-off: Each thread uses ~50-100MB additional memory
+  #
+  # This setting should match approximately half your node's CPU cores.
+  # ---------------------------------------------------------------------------
   grpc:
     enabled: true
     bind_address: "unix:///run/falco/falco.sock"
-    threadiness: 8
+    threadiness: 8  # Explicit thread count for predictable performance
+
   grpc_output:
     enabled: true
 
-  # JSON output for SIEM integration
+  # ---------------------------------------------------------------------------
+  # JSON Output Configuration
+  # ---------------------------------------------------------------------------
+  # Same as demo - JSON output is required for SIEM integration.
+  # No production override needed; these are already correct.
+  # ---------------------------------------------------------------------------
   json_output: true
   json_include_output_property: true
   json_include_tags_property: true
 
-  # Production log level
+  # ---------------------------------------------------------------------------
+  # Log Level - PRODUCTION OVERRIDE
+  # ---------------------------------------------------------------------------
+  # PRODUCTION: "warning" to reduce log volume while maintaining visibility
+  # into operational issues.
+  #
+  # WHY NOT "error"?
+  # Warning level captures important operational events that don't indicate
+  # failure but might need attention (e.g., slow rule loading, config issues).
+  #
+  # WHY NOT "info"?
+  # Info generates significant log volume in production, increasing storage
+  # costs and making important messages harder to find.
+  #
+  # REGULATORY CONTEXT (OSFI E-21):
+  # Log levels should balance visibility with manageability. Warning level
+  # meets audit requirements while remaining practical.
+  # ---------------------------------------------------------------------------
   log_level: warning
 
-  # Stricter syscall event drop handling
+  # ---------------------------------------------------------------------------
+  # Syscall Event Drop Handling - PRODUCTION OVERRIDE
+  # ---------------------------------------------------------------------------
+  # CRITICAL PRODUCTION SETTING
+  #
+  # In production, we use much stricter event drop handling:
+  #
+  # threshold: 0.01 (1%)
+  #   - Production cannot tolerate 10% event loss
+  #   - 1% is the maximum acceptable for regulated environments
+  #   - Consider 0.001 (0.1%) for highest-security workloads
+  #
+  # actions: log, alert, EXIT
+  #   - log: Record the event for post-incident analysis
+  #   - alert: Notify operations team immediately
+  #   - EXIT: TERMINATE FALCO PROCESS
+  #
+  # WHY EXIT ON EVENT DROPS?
+  # 1. Forces immediate investigation (pod crash triggers alerts)
+  # 2. Kubernetes will restart the pod with fresh state
+  # 3. Restart may clear the condition causing drops
+  # 4. If drops persist, repeated crashes trigger investigation
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Controls must operate continuously and completely"
+  # Exiting ensures no silent degradation of security monitoring.
+  #
+  # ALTERNATIVE STRATEGY:
+  # If exit is too disruptive, ensure you have:
+  #   1. Prometheus alerts on falco_kernel_event_drops_total
+  #   2. PagerDuty/OpsGenie integration for immediate notification
+  #   3. Runbook for responding to event drop conditions
+  # ---------------------------------------------------------------------------
   syscall_event_drops:
-    threshold: 0.01
+    threshold: 0.01  # 1% - much stricter than demo's 10%
     actions:
       - log
       - alert
-      - exit
+      - exit  # PRODUCTION: Terminate to force investigation
 
-# Production-grade resource limits
+# -----------------------------------------------------------------------------
+# RESOURCE REQUESTS AND LIMITS - PRODUCTION OVERRIDE
+# -----------------------------------------------------------------------------
+# Production workloads require significantly more resources than demo.
+#
+# PRODUCTION SIZING RATIONALE:
+#   requests.cpu: 500m (0.5 cores)
+#     - Guarantees Falco has dedicated CPU for real-time processing
+#     - Prevents scheduling to starved nodes
+#
+#   requests.memory: 1Gi
+#     - Adequate for rule state, ring buffers, and event queues
+#     - Prevents OOMKill under normal operation
+#
+#   limits.cpu: 2000m (2 cores)
+#     - Allows bursting during high-activity periods
+#     - Prevents runaway CPU consumption
+#
+#   limits.memory: 2Gi
+#     - Headroom for memory spikes
+#     - Prevents OOMKill during incident investigation
+#
+# TUNING PROCESS:
+# 1. Deploy with these defaults
+# 2. Monitor for 2 weeks under production load
+# 3. Review Prometheus metrics:
+#    - container_cpu_usage_seconds_total
+#    - container_memory_working_set_bytes
+#    - falco_kernel_event_drops_total
+# 4. Adjust based on P95 usage + 30% headroom
+#
+# REGULATORY CONTEXT (DORA Article 11):
+# "ICT systems shall have sufficient capacity to... handle peak traffic"
+# Over-provisioning security systems is acceptable; under-provisioning is not.
+# -----------------------------------------------------------------------------
 resources:
   requests:
     cpu: 500m
@@ -40,16 +198,92 @@ resources:
     cpu: 2000m
     memory: 2048Mi
 
-# Priority class for production
+# -----------------------------------------------------------------------------
+# PRIORITY CLASS - PRODUCTION ONLY
+# -----------------------------------------------------------------------------
+# Priority classes determine pod scheduling and eviction priority.
+#
+# system-node-critical:
+#   - Second highest priority (after system-cluster-critical)
+#   - Prevents eviction even under extreme node pressure
+#   - Ensures security monitoring continues during cluster stress
+#
+# WHY NOT system-cluster-critical?
+# Reserved for cluster-level components like kube-apiserver, etcd.
+# Falco is node-level, so system-node-critical is appropriate.
+#
+# EVICTION BEHAVIOR:
+# During resource pressure, Kubernetes evicts pods in this order:
+#   1. BestEffort pods (no requests/limits)
+#   2. Burstable pods (requests < limits)
+#   3. Guaranteed pods (requests = limits)
+#   4. By priority class (lower first)
+#
+# With system-node-critical, Falco survives almost all eviction scenarios.
+#
+# REGULATORY CONTEXT (OSFI B-13):
+# "Critical security controls must remain operational during stress events"
+# Priority class ensures this operationally.
+#
+# WARNING:
+# Using this priority class means Falco can evict other workloads.
+# Ensure adequate cluster capacity to prevent cascading evictions.
+# -----------------------------------------------------------------------------
 priorityClassName: system-node-critical
 
-# Tolerations to run on all nodes
+# -----------------------------------------------------------------------------
+# TOLERATIONS - PRODUCTION OVERRIDE
+# -----------------------------------------------------------------------------
+# Production adds NoExecute toleration in addition to NoSchedule.
+#
+# NoSchedule: Prevents NEW pods from scheduling on tainted nodes
+#   - Falco tolerates this to schedule on all nodes
+#
+# NoExecute: EVICTS existing pods from tainted nodes
+#   - Without toleration, Falco would be evicted if taint is added
+#   - Production tolerates this to survive node tainting events
+#
+# SCENARIOS WHERE NoExecute MATTERS:
+#   1. Node maintenance: Operator taints node before draining
+#   2. Node problems: Kubernetes taints unhealthy nodes
+#   3. Node upgrades: Taints applied during AKS node pool updates
+#
+# In all cases, Falco MUST continue running to monitor the node until
+# it's actually terminated or drained.
+#
+# SECURITY IMPLICATION:
+# Without NoExecute toleration, Falco might be evicted before malicious
+# activity on a stressed node is detected.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Monitoring must be continuous" - tolerations ensure this.
+# -----------------------------------------------------------------------------
 tolerations:
   - effect: NoSchedule
     operator: Exists
   - effect: NoExecute
     operator: Exists
 
-# Prometheus metrics
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Same as demo - metrics collection is essential for both environments.
+#
+# PRODUCTION ALERTING ADDITIONS:
+# In production, configure these Prometheus alerts:
+#
+# CRITICAL (P1 - Wake people up):
+#   - FalcoEventDrops: rate(falco_kernel_event_drops_total[5m]) > 0
+#   - FalcoCrashLoop: kube_pod_container_status_restarts_total > 3 in 15m
+#   - FalcoNotRunning: absent(up{job="falco"}) for 5m
+#
+# WARNING (P2 - Investigate during business hours):
+#   - FalcoHighQueueUsage: falco_outputs_queue_capacity_used > 0.8
+#   - FalcoRulesNotLoaded: falco_rules_count{state="loaded"} == 0
+#   - FalcoHighLatency: histogram_quantile(0.99, falco_...) > 100ms
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Real-time monitoring of security controls" - alerts ensure compliance.
+# -----------------------------------------------------------------------------
 serviceMonitor:
   enabled: true

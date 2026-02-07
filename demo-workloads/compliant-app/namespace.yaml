@@ -1,8 +1,230 @@
+# ============================================================================
+# COMPLIANT APPLICATION NAMESPACE - SECURE ISOLATION
+# ============================================================================
+#
+# PURPOSE:
+# Creates an isolated namespace for the compliant application with proper
+# security labels. This namespace serves as a reference for configuring
+# namespaces in regulated Kubernetes environments.
+#
+# ============================================================================
+# NAMESPACE SECURITY BEST PRACTICES
+# ============================================================================
+#
+# Namespaces provide logical isolation in Kubernetes. For security:
+#
+# 1. One application/team per namespace (separation of concerns)
+# 2. Apply Pod Security Standards via labels
+# 3. Use ResourceQuotas to limit resource consumption
+# 4. Use LimitRanges for default resource constraints
+# 5. Apply NetworkPolicies to restrict traffic
+# 6. Use RBAC to control namespace access
+#
+# ============================================================================
+# POD SECURITY STANDARDS (PSS)
+# ============================================================================
+#
+# Kubernetes 1.23+ supports Pod Security Admission via namespace labels.
+# Three profiles available:
+#
+# PRIVILEGED (Most Permissive):
+#   - No restrictions
+#   - For system components only (CNI, CSI drivers)
+#   - NOT for application workloads
+#
+# BASELINE (Minimal Restrictions):
+#   - Blocks known privilege escalations
+#   - Allows hostNetwork with restrictions
+#   - Suitable for migrating legacy applications
+#   - Blocks: privileged, hostPID, hostIPC, hostNetwork (some)
+#
+# RESTRICTED (Most Secure):
+#   - Heavily restricted configuration
+#   - Required for regulated environments
+#   - Requires:
+#     * Non-root user
+#     * Read-only root filesystem recommended
+#     * Drops all capabilities
+#     * Seccomp profile
+#   - Blocks:
+#     * Privileged containers
+#     * Host namespaces
+#     * Privilege escalation
+#     * Running as root
+#
+# ============================================================================
+# RECOMMENDED CONFIGURATION FOR REGULATED ENVIRONMENTS
+# ============================================================================
+#
+# For PCI-DSS, HIPAA, SOC 2, and other regulated environments, apply:
+#
+#   pod-security.kubernetes.io/enforce: restricted
+#   pod-security.kubernetes.io/enforce-version: latest
+#   pod-security.kubernetes.io/audit: restricted
+#   pod-security.kubernetes.io/audit-version: latest
+#   pod-security.kubernetes.io/warn: restricted
+#   pod-security.kubernetes.io/warn-version: latest
+#
+# These labels enable:
+#   - enforce: Block non-compliant pods from being created
+#   - audit: Log violations in Kubernetes audit logs
+#   - warn: Show warnings to users deploying non-compliant pods
+#
+# ============================================================================
+# COMPARISON WITH VULNERABLE APP NAMESPACE
+# ============================================================================
+#
+# | Aspect                  | Vulnerable Namespace | Compliant Namespace  |
+# |-------------------------|----------------------|----------------------|
+# | PSS Labels              | None                 | Should add restrict. |
+# | Network Policies        | None                 | Yes (see netpol.yaml)|
+# | Resource Quotas         | None                 | Should add           |
+# | Purpose Labels          | Demo/Vulnerable      | Demo/Compliant       |
+#
+# ============================================================================
+# REGULATORY ALIGNMENT
+# ============================================================================
+#
+# PCI-DSS:
+#   - 2.2: Configuration standards for system components
+#   - 7.1: Limit access to system components (namespace isolation)
+#
+# HIPAA:
+#   - 164.312(a)(1): Access controls to PHI systems
+#   - 164.312(e)(1): Transmission security (network segmentation)
+#
+# SOC 2:
+#   - CC6.1: Logical access controls
+#   - CC6.6: Security event monitoring (via audit labels)
+#
+# NIST 800-53:
+#   - AC-2: Account management (namespace-scoped RBAC)
+#   - CM-6: Configuration settings (PSS labels)
+#   - SC-7: Boundary protection (network policies)
+#
+# ============================================================================
+
 apiVersion: v1
 kind: Namespace
 metadata:
   name: compliant-app
   labels:
+    # ===========================================================================
+    # ENVIRONMENT LABEL
+    # ===========================================================================
+    # Indicates this is a demonstration environment.
+    # Production namespaces would use: environment: production
+    # This label can be used in RBAC, NetworkPolicies, and monitoring filters.
+    # ===========================================================================
     environment: demo
+
+    # ===========================================================================
+    # SECURITY POSTURE LABEL
+    # ===========================================================================
+    # Explicitly marks the security posture of workloads in this namespace.
+    # Can be used by:
+    #   - Monitoring systems for security dashboards
+    #   - Kyverno policies for conditional enforcement
+    #   - Audit tools for compliance reporting
+    # ===========================================================================
     security-posture: compliant
+
+    # ===========================================================================
+    # PURPOSE LABEL
+    # ===========================================================================
+    # Documents the intent of this namespace.
+    # Helps operators understand why this namespace exists.
+    # ===========================================================================
     purpose: security-demo
+
+    # ===========================================================================
+    # POD SECURITY STANDARDS (Recommended for Production)
+    # ===========================================================================
+    # In a production regulated environment, add these labels:
+    #
+    # pod-security.kubernetes.io/enforce: restricted
+    #   - Kubernetes will BLOCK non-compliant pods from being scheduled
+    #   - Violations result in pod creation failure
+    #
+    # pod-security.kubernetes.io/enforce-version: latest
+    #   - Use the latest version of the restricted profile
+    #   - Alternatively, pin to a specific version like "v1.28"
+    #
+    # pod-security.kubernetes.io/audit: restricted
+    #   - Non-compliant pods are logged in Kubernetes audit logs
+    #   - Useful for compliance reporting and incident investigation
+    #
+    # pod-security.kubernetes.io/warn: restricted
+    #   - kubectl shows warnings when deploying non-compliant pods
+    #   - Helps developers understand violations before enforcement
+    #
+    # Example for production:
+    #   pod-security.kubernetes.io/enforce: restricted
+    #   pod-security.kubernetes.io/enforce-version: latest
+    #   pod-security.kubernetes.io/audit: restricted
+    #   pod-security.kubernetes.io/audit-version: latest
+    #   pod-security.kubernetes.io/warn: restricted
+    #   pod-security.kubernetes.io/warn-version: latest
+    #
+    # NOTE: For this demo, we don't enable enforce mode to allow comparison
+    # between vulnerable and compliant apps. In production, ALWAYS enforce.
+    # ===========================================================================
+
+# ============================================================================
+# ADDITIONAL RESOURCES FOR COMPLETE NAMESPACE SECURITY
+# ============================================================================
+#
+# In a production regulated environment, also deploy:
+#
+# 1. ResourceQuota - Limit total resources in the namespace:
+#
+#    apiVersion: v1
+#    kind: ResourceQuota
+#    metadata:
+#      name: compliant-app-quota
+#      namespace: compliant-app
+#    spec:
+#      hard:
+#        requests.cpu: "2"
+#        requests.memory: 2Gi
+#        limits.cpu: "4"
+#        limits.memory: 4Gi
+#        pods: "10"
+#        services: "5"
+#        secrets: "10"
+#
+# 2. LimitRange - Set default resource constraints:
+#
+#    apiVersion: v1
+#    kind: LimitRange
+#    metadata:
+#      name: compliant-app-limits
+#      namespace: compliant-app
+#    spec:
+#      limits:
+#        - default:
+#            cpu: 200m
+#            memory: 128Mi
+#          defaultRequest:
+#            cpu: 50m
+#            memory: 64Mi
+#          type: Container
+#
+# 3. NetworkPolicy - See networkpolicy.yaml in this directory
+#
+# 4. RBAC - Namespace-scoped roles for development teams:
+#
+#    apiVersion: rbac.authorization.k8s.io/v1
+#    kind: Role
+#    metadata:
+#      name: compliant-app-developer
+#      namespace: compliant-app
+#    rules:
+#      - apiGroups: [""]
+#        resources: ["pods", "pods/log", "configmaps"]
+#        verbs: ["get", "list", "watch"]
+#      - apiGroups: ["apps"]
+#        resources: ["deployments", "replicasets"]
+#        verbs: ["get", "list", "watch"]
+#
+# ============================================================================

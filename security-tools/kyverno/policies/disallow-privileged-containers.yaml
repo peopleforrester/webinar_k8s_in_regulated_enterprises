@@ -1,52 +1,238 @@
+# ============================================================================
+# KYVERNO POLICY: Disallow Privileged Containers
+# ============================================================================
+#
+# SECURITY RISK BEING MITIGATED:
+# ------------------------------
+# Privileged containers run with all Linux capabilities and have direct access
+# to the host's devices, filesystems, and network stack. This is equivalent to
+# running as root on the host machine itself. A container with privileged mode
+# enabled can:
+#   - Access all host devices (/dev/*)
+#   - Mount the host filesystem
+#   - Load kernel modules
+#   - Modify network settings
+#   - Access other containers' data
+#   - Escape to the host entirely
+#
+# HOW ATTACKERS EXPLOIT THIS VULNERABILITY:
+# -----------------------------------------
+# Attack Scenario 1: Container Escape
+#   1. Attacker compromises a web application running in a privileged container
+#   2. Attacker mounts host filesystem: mount /dev/sda1 /mnt
+#   3. Attacker accesses host's /etc/shadow, SSH keys, or Kubernetes secrets
+#   4. Attacker pivots to other nodes or the control plane
+#
+# Attack Scenario 2: Cryptomining/Ransomware
+#   1. Attacker exploits CVE in privileged container
+#   2. Attacker loads kernel module for hiding processes
+#   3. Attacker installs cryptominer that runs on host CPU
+#   4. Mining activity is hidden from container monitoring
+#
+# Attack Scenario 3: Supply Chain Compromise
+#   1. Malicious image is pulled (typosquatting or compromised registry)
+#   2. Image runs initialization script requiring privileged mode
+#   3. Script exfiltrates all secrets from host kubelet credentials
+#   4. Attacker gains cluster-admin access
+#
+# REGULATORY REQUIREMENTS ADDRESSED:
+# ----------------------------------
+# NCUA (National Credit Union Administration):
+#   - Supervisory Priority: Cybersecurity Controls
+#   - Requirement: Credit unions must implement controls that prevent
+#     unauthorized access to systems and data
+#   - Privileged containers bypass all container isolation controls
+#
+# OSFI B-13 (Office of the Superintendent of Financial Institutions - Canada):
+#   - Section 4.3: Access Controls
+#   - Requirement: "FRFIs should implement access controls that limit
+#     access to technology assets based on the principle of least privilege"
+#   - Privileged mode grants maximum possible privileges
+#
+# DORA (Digital Operational Resilience Act - EU):
+#   - Article 9: ICT Risk Management Framework
+#   - Requirement: "Financial entities shall...implement policies and
+#     procedures for ICT security including...access control policies"
+#   - Article 9(4)(c): Specific requirement for access control mechanisms
+#
+# ============================================================================
+# POLICY CONFIGURATION EXPLAINED
+# ============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: disallow-privileged-containers
   annotations:
+    # -------------------------------------------------------------------------
+    # Kyverno Standard Annotations
+    # These annotations are used by Kyverno's Policy Reporter and UI tools
+    # to categorize and display policy information.
+    # -------------------------------------------------------------------------
     policies.kyverno.io/title: Disallow Privileged Containers
+    # Category aligns with Kubernetes Pod Security Standards
+    # Baseline = minimum security that prevents known privilege escalations
+    # Restricted = heavily restricted, following security best practices
     policies.kyverno.io/category: Pod Security Standards (Baseline)
+    # Severity levels: low, medium, high, critical
+    # High because privileged containers can lead to full cluster compromise
     policies.kyverno.io/severity: high
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
       Privileged containers can access all host devices and bypass most
       security controls. This policy blocks privileged containers in
       compliance with financial services regulatory requirements.
-    # Regulatory compliance mapping
+    # -------------------------------------------------------------------------
+    # Custom Regulatory Compliance Annotations
+    # These map the policy to specific regulatory requirements for audit trails
+    # -------------------------------------------------------------------------
     compliance.regulated/ncua: "NCUA Supervisory Priority - Cybersecurity Controls"
     compliance.regulated/osfi-b13: "OSFI B-13 Section 4.3 - Access Controls"
     compliance.regulated/dora: "DORA Article 9 - ICT Risk Management"
 spec:
+  # ===========================================================================
+  # VALIDATION FAILURE ACTION: Enforce vs Audit
+  # ===========================================================================
+  # Enforce: Block the resource from being created/updated if it violates policy
+  #   - Pod admission is DENIED
+  #   - User receives error message immediately
+  #   - Use for critical security controls that must never be bypassed
+  #
+  # Audit: Allow the resource but log a policy violation
+  #   - Pod admission is ALLOWED
+  #   - Violation recorded in policy reports
+  #   - Use for gradual rollout or informational policies
+  #
+  # For privileged containers, we use Enforce because:
+  #   1. The security risk is severe (full cluster compromise)
+  #   2. There are no legitimate use cases in application workloads
+  #   3. Regulatory requirements mandate preventive controls
+  # ===========================================================================
   validationFailureAction: Enforce
+
+  # background: true means this policy will also scan existing resources
+  # and generate reports for pods that were created before policy deployment
   background: true
+
   rules:
+    # =========================================================================
+    # RULE 1: Deny Privileged Regular Containers
+    # =========================================================================
     - name: deny-privileged-containers
+      # -----------------------------------------------------------------------
+      # MATCH BLOCK: Which resources does this rule apply to?
+      # -----------------------------------------------------------------------
       match:
         any:
           - resources:
               kinds:
                 - Pod
+              # Note: We match on Pod, not Deployment/StatefulSet, because
+              # Kyverno evaluates policies when the Pod is actually created.
+              # Higher-level resources (Deployments) create Pods, and that's
+              # when the policy is enforced.
+      # -----------------------------------------------------------------------
+      # EXCLUDE BLOCK: Which namespaces are exempted and why?
+      # -----------------------------------------------------------------------
+      # IMPORTANT: These exclusions exist because system components genuinely
+      # require elevated privileges to function. This is NOT a security bypass.
+      # -----------------------------------------------------------------------
       exclude:
         any:
           - resources:
               namespaces:
+                # -------------------------------------------------------------
+                # kube-system: Core Kubernetes components
+                # WHY EXCLUDED: Contains kube-proxy (needs NET_ADMIN for iptables),
+                # CNI plugins (need network namespace access), storage drivers
+                # (need device access for mounting volumes)
+                # RISK MITIGATION: These are cluster-managed, not user-deployed
+                # -------------------------------------------------------------
                 - kube-system
+
+                # -------------------------------------------------------------
+                # kube-node-lease: Node heartbeat mechanism
+                # WHY EXCLUDED: Critical for node health monitoring
+                # RISK: Minimal - only contains Lease objects, no pods typically
+                # -------------------------------------------------------------
                 - kube-node-lease
+
+                # -------------------------------------------------------------
+                # kube-public: Public cluster information
+                # WHY EXCLUDED: May contain cluster info ConfigMaps
+                # RISK: Minimal - rarely contains workloads
+                # -------------------------------------------------------------
                 - kube-public
+
+                # -------------------------------------------------------------
+                # kyverno: Policy engine itself
+                # WHY EXCLUDED: Kyverno needs elevated access to intercept and
+                # validate all API requests. Without this, policy enforcement
+                # would fail.
+                # RISK MITIGATION: Kyverno is a trusted security component
+                # -------------------------------------------------------------
                 - kyverno
+
+                # -------------------------------------------------------------
+                # falco: Runtime security monitoring
+                # WHY EXCLUDED: Falco's eBPF probes require privileged access
+                # to kernel tracepoints for detecting malicious behavior
+                # RISK MITIGATION: Falco IS the security monitoring tool
+                # -------------------------------------------------------------
                 - falco
+
+                # -------------------------------------------------------------
+                # trivy-system: Vulnerability scanning
+                # WHY EXCLUDED: Trivy operator may need access to container
+                # images and registries for scanning
+                # RISK MITIGATION: Trivy is a security scanning tool
+                # -------------------------------------------------------------
                 - trivy-system
+
+                # -------------------------------------------------------------
+                # kubescape: Security posture management
+                # WHY EXCLUDED: Kubescape needs access to evaluate cluster
+                # security configuration
+                # RISK MITIGATION: Kubescape is a security assessment tool
+                # -------------------------------------------------------------
                 - kubescape
+      # -----------------------------------------------------------------------
+      # VALIDATE BLOCK: The actual policy logic
+      # -----------------------------------------------------------------------
       validate:
+        # Message shown to users when their pod is rejected
+        # Include: regulatory reference, what failed, and what to fix
         message: >-
           Privileged containers are not allowed. Regulatory requirement:
           NCUA Cybersecurity Controls, OSFI B-13 Section 4.3,
           DORA Article 9. Container '{{request.object.metadata.name}}'
           in pod requested privileged mode.
+        # ---------------------------------------------------------------------
+        # PATTERN MATCHING EXPLAINED:
+        # ---------------------------------------------------------------------
+        # This pattern uses Kyverno's "anchor" syntax:
+        #   =(field): means "if this field exists, it must match"
+        #   =(privileged): false means "if privileged is set, it must be false"
+        #
+        # The pattern says:
+        #   "For every container, IF securityContext exists AND IF privileged
+        #    is set, THEN privileged MUST be false"
+        #
+        # This allows pods that don't specify privileged at all (defaults to false)
+        # while blocking pods that explicitly set privileged: true
+        # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
               - =(securityContext):
                   =(privileged): false
+
+    # =========================================================================
+    # RULE 2: Deny Privileged Init Containers
+    # =========================================================================
+    # Init containers run BEFORE the main containers and often have more
+    # permissions because they're used for setup tasks. Attackers sometimes
+    # try to put malicious code in init containers to avoid detection.
+    # =========================================================================
     - name: deny-privileged-init-containers
       match:
         any:
@@ -64,6 +250,16 @@ spec:
                 - falco
                 - trivy-system
                 - kubescape
+      # -----------------------------------------------------------------------
+      # PRECONDITIONS: Only apply this rule if init containers exist
+      # -----------------------------------------------------------------------
+      # Without this precondition, the rule would fail on pods without init
+      # containers because there would be nothing to validate against.
+      #
+      # The JMESPath expression:
+      #   request.object.spec.initContainers[] || `[]` | length(@)
+      # Returns the count of init containers, defaulting to 0 if none exist
+      # -----------------------------------------------------------------------
       preconditions:
         all:
           - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
@@ -78,3 +274,70 @@ spec:
             initContainers:
               - =(securityContext):
                   =(privileged): false
+
+# ============================================================================
+# EXAMPLES: What Gets Blocked vs What Passes
+# ============================================================================
+#
+# BLOCKED - Explicit privileged: true
+# -----------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         privileged: true    # <-- BLOCKED: Explicitly requests privileged
+#
+# PASSES - Explicit privileged: false
+# -----------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         privileged: false   # <-- PASSES: Explicitly non-privileged
+#
+# PASSES - No securityContext specified
+# -------------------------------------
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25     # <-- PASSES: Defaults to non-privileged
+#
+# BLOCKED - Privileged init container
+# -----------------------------------
+# spec:
+#   initContainers:
+#     - name: init
+#       image: busybox
+#       securityContext:
+#         privileged: true    # <-- BLOCKED: Init containers also checked
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#
+# ============================================================================
+# REMEDIATION GUIDANCE
+# ============================================================================
+#
+# If your application genuinely needs capabilities that privileged provides,
+# use specific Linux capabilities instead:
+#
+# spec:
+#   containers:
+#     - name: web
+#       image: nginx:1.25
+#       securityContext:
+#         privileged: false
+#         capabilities:
+#           add:
+#             - NET_BIND_SERVICE  # Bind to ports < 1024
+#           drop:
+#             - ALL               # Drop all other capabilities
+#
+# Common capability mappings:
+#   - NET_ADMIN: Network configuration (alternative: use CNI or service mesh)
+#   - SYS_ADMIN: Many operations (usually means app needs redesign)
+#   - SYS_PTRACE: Debugging (should not be in production)
+#
+# ============================================================================
