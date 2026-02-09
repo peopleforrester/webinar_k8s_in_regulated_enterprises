@@ -133,8 +133,14 @@ docker --version  # Docker (for building demo images)
 ## Cleanup
 
 ```bash
-# Remove all resources
+# Reset for fresh demo run (keep cluster + tools, redeploy vulnerable app)
+./scripts/cleanup.sh --reset-demo
+
+# Remove demo workloads and policies only
 ./scripts/cleanup.sh
+
+# Full teardown including Azure infrastructure
+./scripts/cleanup.sh --full --destroy
 ```
 
 ## Webinar Recording

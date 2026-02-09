@@ -2,10 +2,22 @@
 
 Exact commands and talking points for the 20-minute live demo.
 
+## Pre-Demo Reset
+
+If you ran `full-demo-test.sh` earlier to validate, reset the cluster for a fresh demo:
+
+```bash
+# Removes workloads + policies, redeploys vulnerable app, leaves tools running
+./scripts/cleanup.sh --reset-demo
+```
+
+This gives you a clean starting point: vulnerable app running, Falco watching, no Kyverno policies active.
+
 ## Pre-Demo Checklist
 
 - [ ] AKS cluster deployed and `kubectl` configured
 - [ ] All security tools installed (`./scripts/install-security-tools.sh`)
+- [ ] Demo reset completed (`./scripts/cleanup.sh --reset-demo`)
 - [ ] Vulnerable app deployed (before Kyverno policies)
 - [ ] Two terminal windows open (one for commands, one for Falco logs)
 - [ ] KubeHound running (if using attack path visualization)

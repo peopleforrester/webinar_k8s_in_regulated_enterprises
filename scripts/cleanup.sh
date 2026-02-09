@@ -7,6 +7,7 @@
 # PURPOSE:
 #   This script provides safe cleanup of demo resources with multiple levels:
 #   - Default: Remove demo workloads and policies only
+#   - --reset-demo: Remove workloads/policies, then redeploy vulnerable app (pre-demo reset)
 #   - --full: Also remove security tool Helm releases
 #   - --destroy: Also destroy Terraform infrastructure (AKS cluster)
 #
@@ -15,6 +16,7 @@
 #
 # USAGE:
 #   ./cleanup.sh              # Remove demo workloads only (safe)
+#   ./cleanup.sh --reset-demo # Reset for fresh demo (clean + redeploy vulnerable app)
 #   ./cleanup.sh --full       # Also remove Helm releases
 #   ./cleanup.sh --destroy    # Also destroy Azure infrastructure
 #   ./cleanup.sh --full --destroy  # Complete teardown
@@ -27,6 +29,12 @@
 #     - compliant-app namespace and all resources
 #     - Kyverno policies (ClusterPolicies)
 #     - RBAC resources (ClusterRole, ClusterRoleBinding)
+#
+#   --reset-demo (default cleanup + redeploy):
+#     - Everything in DEFAULT
+#     - Then redeploys vulnerable-app (namespace + workload)
+#     - Leaves security tools running, policies removed
+#     - Cluster is ready for a fresh demo run
 #
 #   --full (adds):
 #     - Kubescape Helm release and namespace
@@ -84,15 +92,21 @@ echo ""
 # than getopts for simple flags and provides good error messages.
 #
 # FLAGS:
-#   --full    : Also remove Helm-installed security tools
-#   --destroy : Also destroy Terraform-managed Azure infrastructure
-#   --help    : Show usage and exit
+#   --reset-demo : Clean workloads/policies, then redeploy vulnerable app for fresh demo
+#   --full       : Also remove Helm-installed security tools
+#   --destroy    : Also destroy Terraform-managed Azure infrastructure
+#   --help       : Show usage and exit
 # ============================================================================
 FULL_CLEANUP=false
 DESTROY_INFRA=false
+RESET_DEMO=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --reset-demo)
+            RESET_DEMO=true
+            shift
+            ;;
         --full)
             FULL_CLEANUP=true
             shift
@@ -105,9 +119,10 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: cleanup.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --full      Remove security tools (Helm releases)"
-            echo "  --destroy   Destroy Terraform infrastructure (AKS cluster)"
-            echo "  -h, --help  Show this help"
+            echo "  --reset-demo  Reset for fresh demo (clean + redeploy vulnerable app)"
+            echo "  --full        Remove security tools (Helm releases)"
+            echo "  --destroy     Destroy Terraform infrastructure (AKS cluster)"
+            echo "  -h, --help    Show this help"
             exit 0
             ;;
         *)
@@ -256,6 +271,38 @@ if [[ "${DESTROY_INFRA}" == "true" ]]; then
     else
         echo "Aborted infrastructure destruction."
     fi
+fi
+
+# ============================================================================
+# OPTIONAL: RESET FOR FRESH DEMO
+# ============================================================================
+# When --reset-demo is specified, we redeploy the vulnerable app after
+# cleanup so the cluster is ready for a fresh demo run. This is the
+# pre-webinar reset command:
+#   1. Workloads and policies are removed (steps 1-3 above)
+#   2. Vulnerable app is redeployed (so the attack phase works)
+#   3. Security tools remain installed (Falco, Kyverno engine, etc.)
+#   4. Kyverno policies are NOT applied (so vulnerable app can deploy)
+#
+# After running --reset-demo, the demo script starts clean:
+#   - Vulnerable app is running (for attack + detect phases)
+#   - No policies are active (apply them live in prevent phase)
+#   - Falco is watching (detects attack simulation immediately)
+# ============================================================================
+if [[ "${RESET_DEMO}" == "true" ]]; then
+    echo -e "${YELLOW}[5/5] Resetting for fresh demo...${NC}"
+    echo -e "  Deploying vulnerable app..."
+    kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/namespace.yaml" 2>/dev/null || true
+    kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/" 2>/dev/null || true
+
+    # Wait for pods to be ready
+    echo -e "  Waiting for vulnerable app pods..."
+    kubectl wait --for=condition=available deployment/vulnerable-app \
+        -n vulnerable-app --timeout=120s 2>/dev/null || true
+
+    echo -e "${GREEN}  Demo reset complete - vulnerable app running, no policies active${NC}"
+    echo ""
+    echo -e "${BOLD}  Demo is ready! Follow docs/DEMO-SCRIPT.md${NC}"
 fi
 
 echo ""

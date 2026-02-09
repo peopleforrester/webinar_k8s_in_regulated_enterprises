@@ -148,12 +148,17 @@ kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
 ## Step 5: Cleanup
 
 ```bash
-# Remove workloads and tools (keep cluster)
+# Reset for a fresh demo (removes workloads/policies, redeploys vulnerable app)
+./scripts/cleanup.sh --reset-demo
+
+# Remove workloads and policies only (keep cluster + tools)
 ./scripts/cleanup.sh
 
-# Or destroy everything including AKS
-cd infrastructure/terraform
-terraform destroy
+# Remove workloads, policies, and security tools (keep cluster)
+./scripts/cleanup.sh --full
+
+# Destroy everything including AKS cluster
+./scripts/cleanup.sh --full --destroy
 ```
 
 ## Key Demonstrations
