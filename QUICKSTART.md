@@ -22,6 +22,39 @@ Deploy a fully secured AKS cluster with the complete CNCF security stack in 15 m
 | Trivy | 0.29.0 | Vulnerability scanning |
 | KubeHound | 1.6.7 | Attack path analysis |
 
+## Automated Full Test (Recommended)
+
+Run the complete end-to-end test with a single command:
+
+```bash
+# Full test: deploy infra + install tools + run demo + validate
+./scripts/full-demo-test.sh
+
+# Skip infrastructure (use existing cluster)
+./scripts/full-demo-test.sh --skip-infra
+
+# Quick validation of existing setup
+./scripts/quick-validate.sh
+
+# Cleanup only
+./scripts/full-demo-test.sh --cleanup-only
+```
+
+**What `full-demo-test.sh` does:**
+1. Checks prerequisites (az, terraform, kubectl, helm, kubescape, trivy)
+2. Deploys AKS infrastructure via Terraform
+3. Installs Kyverno, Falco, and Kubescape
+4. Deploys compliant app, tests that vulnerable app is blocked
+5. Runs attack simulation to generate Falco alerts
+6. Runs Kubescape and Trivy compliance scans
+7. Displays validation summary
+8. Optionally cleans up infrastructure
+
+**Estimated time:** 15-20 minutes
+**Estimated cost:** ~$10-15 for a 1-hour test
+
+---
+
 ## Step 1: Deploy AKS Cluster (5-10 minutes)
 
 ```bash
