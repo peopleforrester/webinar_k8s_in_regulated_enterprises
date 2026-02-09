@@ -212,7 +212,7 @@ variable "system_node_count" {
 variable "system_node_vm_size" {
   description = "VM size for system nodes"
   type        = string
-  default     = "Standard_D4s_v3"
+  default     = "Standard_D2s_v3"  # 2 vCPU - reduced for demo (10 vCPU quota)
 }
 
 # -----------------------------------------------------------------------------
@@ -221,7 +221,7 @@ variable "system_node_vm_size" {
 variable "user_node_count" {
   description = "Number of user workload nodes"
   type        = number
-  default     = 3 # Starting count; auto-scaling enabled in aks.tf
+  default     = 0 # Disabled for demo - system pool handles workloads
 
   # VALIDATION: Ensure reasonable starting count
   # validation {
@@ -255,7 +255,7 @@ variable "user_node_count" {
 variable "user_node_vm_size" {
   description = "VM size for user workload nodes"
   type        = string
-  default     = "Standard_D4s_v3"
+  default     = "Standard_D2s_v3"  # 2 vCPU - reduced for demo (10 vCPU quota)
 }
 
 # =============================================================================

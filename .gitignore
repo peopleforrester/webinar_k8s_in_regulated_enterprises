@@ -56,3 +56,4 @@ kubehound/data/
 # Session files
 *.session
 .session/
+*.tfplan

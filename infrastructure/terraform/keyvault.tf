@@ -77,7 +77,7 @@ resource "azurerm_key_vault" "main" {
   # - Must start with a letter
   # - Must be globally unique
   # ---------------------------------------------------------------------------
-  name                = "kv-${var.cluster_name}-${random_string.suffix.result}"
+  name                = "kv-aksreg-${random_string.suffix.result}"  # Max 24 chars
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
 

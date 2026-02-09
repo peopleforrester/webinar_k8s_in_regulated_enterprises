@@ -802,7 +802,9 @@ resource "azurerm_kubernetes_cluster" "main" {
   # - DORA Article 7: ICT systems kept up to date
   # ===========================================================================
   automatic_channel_upgrade = "stable"
-  node_os_upgrade_channel   = "SecurityPatch"
+  # Note: node_os_upgrade_channel requires azurerm provider >= 4.0
+  # Uncomment when provider is updated:
+  # node_os_upgrade_channel = "SecurityPatch"
 
   # ===========================================================================
   # MAINTENANCE WINDOW
