@@ -241,7 +241,7 @@ output "oidc_issuer_url" {
 
 output "get_credentials_command" {
   description = "Azure CLI command to configure kubectl for this cluster"
-  value       = "az aks get-credentials --resource-group ${azurerm_resource_group.main.name} --name ${azurerm_kubernetes_cluster.main.name}"
+  value       = "az aks get-credentials --resource-group ${azurerm_resource_group.main.name} --name ${azurerm_kubernetes_cluster.main.name} --admin"
 
   # ---------------------------------------------------------------------------
   # WHAT THIS COMMAND DOES:

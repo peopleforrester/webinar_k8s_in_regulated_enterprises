@@ -78,7 +78,8 @@ terraform apply
 # Get credentials
 az aks get-credentials \
   --resource-group $(terraform output -raw resource_group_name) \
-  --name $(terraform output -raw aks_cluster_name)
+  --name $(terraform output -raw aks_cluster_name) \
+  --admin
 
 # Verify connection
 kubectl get nodes

@@ -272,7 +272,7 @@ echo ""
 echo -e "${YELLOW}Configuring kubectl...${NC}"
 RG=$(terraform output -raw resource_group_name)
 CLUSTER=$(terraform output -raw aks_cluster_name)
-az aks get-credentials --resource-group "${RG}" --name "${CLUSTER}" --overwrite-existing
+az aks get-credentials --resource-group "${RG}" --name "${CLUSTER}" --admin --overwrite-existing
 echo ""
 
 # ============================================================================

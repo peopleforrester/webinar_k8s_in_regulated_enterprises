@@ -56,7 +56,8 @@ stages:
                     inlineScript: |
                       az aks get-credentials \
                         --resource-group $(aksResourceGroup) \
-                        --name $(aksCluster)
+                        --name $(aksCluster) \
+                        --admin
 
                 - script: |
                     kubectl apply -f demo-workloads/compliant-app/namespace.yaml

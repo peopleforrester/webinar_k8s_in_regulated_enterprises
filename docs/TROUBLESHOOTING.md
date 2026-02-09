@@ -44,7 +44,7 @@ az aks show --resource-group RG_NAME --name CLUSTER_NAME --query provisioningSta
 
 ```bash
 # Re-fetch credentials
-az aks get-credentials --resource-group RG_NAME --name CLUSTER_NAME --overwrite-existing
+az aks get-credentials --resource-group RG_NAME --name CLUSTER_NAME --admin --overwrite-existing
 
 # Verify context
 kubectl config current-context

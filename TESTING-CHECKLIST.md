@@ -79,7 +79,8 @@ terraform apply tfplan
 ```bash
 az aks get-credentials \
   --resource-group $(terraform output -raw resource_group_name) \
-  --name $(terraform output -raw aks_cluster_name)
+  --name $(terraform output -raw aks_cluster_name) \
+  --admin
 
 kubectl get nodes
 ```

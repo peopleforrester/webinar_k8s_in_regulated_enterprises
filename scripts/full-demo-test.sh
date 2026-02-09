@@ -160,7 +160,7 @@ deploy_infrastructure() {
     local resource_group=$(terraform output -raw resource_group_name 2>/dev/null || echo "rg-aks-regulated-demo")
     local cluster_name=$(terraform output -raw cluster_name 2>/dev/null || echo "aks-regulated-demo")
 
-    az aks get-credentials --resource-group "$resource_group" --name "$cluster_name" --overwrite-existing
+    az aks get-credentials --resource-group "$resource_group" --name "$cluster_name" --admin --overwrite-existing
     success "kubectl configured for cluster: $cluster_name"
 
     # Verify cluster connection
