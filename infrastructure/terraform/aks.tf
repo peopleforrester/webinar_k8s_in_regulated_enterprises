@@ -807,6 +807,30 @@ resource "azurerm_kubernetes_cluster" "main" {
   # node_os_upgrade_channel = "SecurityPatch"
 
   # ===========================================================================
+  # API SERVER ACCESS CONTROL
+  # ===========================================================================
+  # Restricts which IP addresses can access the Kubernetes API server.
+  # CRITICAL FOR SECURITY: Limits exposure of control plane to trusted networks.
+  #
+  # REGULATORY ALIGNMENT:
+  # - NCUA Part 748: Network access controls
+  # - OSFI B-13: Network segmentation requirements
+  # - DORA Article 9: Access control for ICT systems
+  # - FFIEC: Defense in depth / least privilege
+  #
+  # CONFIGURATION:
+  # - Empty list = unrestricted (not recommended for production)
+  # - Add CIDR ranges for authorized networks (e.g., ["71.131.87.246/32"])
+  # - Include VPN/corporate network ranges for team access
+  # ===========================================================================
+  dynamic "api_server_access_profile" {
+    for_each = length(var.api_server_authorized_ip_ranges) > 0 ? [1] : []
+    content {
+      authorized_ip_ranges = var.api_server_authorized_ip_ranges
+    }
+  }
+
+  # ===========================================================================
   # MAINTENANCE WINDOW
   # ===========================================================================
   # Defines when AKS can perform disruptive operations like:

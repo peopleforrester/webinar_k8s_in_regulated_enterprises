@@ -375,3 +375,14 @@ variable "log_retention_days" {
   #   error_message = "Log retention must be between 30 and 730 days."
   # }
 }
+
+# =============================================================================
+# API SERVER ACCESS CONTROL
+# =============================================================================
+
+variable "api_server_authorized_ip_ranges" {
+  description = "List of IP ranges (CIDR) allowed to access the AKS API server. Leave empty for unrestricted access."
+  type        = list(string)
+  default     = []  # Empty = unrestricted (add your IP/32 for restricted access)
+  # Example: ["71.131.87.246/32", "10.0.0.0/8"]
+}
