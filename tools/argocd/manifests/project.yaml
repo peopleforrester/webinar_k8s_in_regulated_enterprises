@@ -1,0 +1,266 @@
+# ABOUTME: Argo CD AppProject CRD defining a "regulated-apps" project.
+# ABOUTME: Restricts sources, destinations, and RBAC for regulated workloads.
+# =============================================================================
+# ARGO CD APP PROJECT - REGULATED APPS
+# =============================================================================
+#
+# PURPOSE:
+# An AppProject defines boundaries for a group of Applications. It controls:
+#   1. Which Git repositories Applications can pull from (source restrictions)
+#   2. Which clusters and namespaces Applications can deploy to (destinations)
+#   3. Which Kubernetes resource types Applications can manage (allowed kinds)
+#   4. Which roles and permissions apply to Applications in the project (RBAC)
+#
+# WHY PROJECTS MATTER FOR REGULATED ENVIRONMENTS:
+# Projects implement the principle of least privilege for deployments.
+# Without projects, any Application can deploy from any repo to any namespace,
+# bypassing organizational security boundaries.
+#
+# EXAMPLE SCENARIO:
+# A "regulated-apps" project ensures that:
+#   - Only approved repositories can be used as manifest sources
+#   - Deployments are restricted to specific namespaces
+#   - System namespaces (kube-system, argocd) cannot be modified
+#   - Developers cannot deploy cluster-scoped resources (ClusterRoles, etc.)
+#   - Auditors have read-only access without sync permissions
+#
+# REGULATORY CONTEXT:
+#   NCUA/FFIEC:      "Access controls enforce separation of duties"
+#   DORA Article 9:  "ICT systems restrict unauthorized changes"
+#   SOC 2 CC6.1:     "Logical access controls based on job function"
+#   PCI-DSS Req 7.1: "Limit access to system components on need-to-know"
+#
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  # ---------------------------------------------------------------------------
+  # Project Name
+  # ---------------------------------------------------------------------------
+  # Referenced by Applications in spec.project. Use a descriptive name
+  # that reflects the project's scope and security tier.
+  # ---------------------------------------------------------------------------
+  name: regulated-apps
+  # ---------------------------------------------------------------------------
+  # Namespace
+  # ---------------------------------------------------------------------------
+  # AppProjects must be created in the Argo CD namespace.
+  # ---------------------------------------------------------------------------
+  namespace: argocd
+  # ---------------------------------------------------------------------------
+  # Finalizers
+  # ---------------------------------------------------------------------------
+  # Prevent accidental deletion of a project that still has Applications.
+  # Argo CD will refuse to delete the project until all Applications
+  # referencing it are removed first.
+  #
+  # REGULATORY CONTEXT (DORA Article 9):
+  # "Prevent unauthorized removal of ICT controls"
+  # The finalizer ensures the project (and its restrictions) cannot be
+  # removed while applications depend on it.
+  # ---------------------------------------------------------------------------
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # ---------------------------------------------------------------------------
+  # Description
+  # ---------------------------------------------------------------------------
+  # Human-readable description displayed in the Argo CD UI.
+  # Document the purpose and regulatory scope of the project.
+  # ---------------------------------------------------------------------------
+  description: >-
+    Project for regulated workloads in the AKS demo environment.
+    Restricts source repositories, deployment targets, and resource types
+    to enforce change management and least-privilege access controls.
+
+  # ===========================================================================
+  # SOURCE REPOSITORIES
+  # ===========================================================================
+  # Whitelist of Git repositories that Applications in this project can use.
+  # Applications referencing any other repository will be rejected.
+  #
+  # WHY RESTRICT SOURCES?
+  # - Prevents deploying from untrusted or unauthorized repositories
+  # - Ensures all deployments originate from approved, reviewed code
+  # - Supports supply chain security requirements
+  #
+  # PATTERNS:
+  #   Exact URL:   https://github.com/org/repo.git
+  #   Wildcard:    https://github.com/org/*
+  #   All repos:   * (not recommended for production)
+  #
+  # REGULATORY CONTEXT (PCI-DSS Req 6.5):
+  # "Ensure all changes originate from authorized sources"
+  # Source restrictions guarantee only reviewed, approved code is deployed.
+  # ===========================================================================
+  sourceRepos:
+    - https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+
+  # ===========================================================================
+  # DESTINATION RESTRICTIONS
+  # ===========================================================================
+  # Whitelist of cluster/namespace pairs where Applications can deploy.
+  # Any deployment to an unlisted destination is rejected.
+  #
+  # WHY RESTRICT DESTINATIONS?
+  # - Prevents accidental deployments to production from staging configs
+  # - Protects system namespaces from application workloads
+  # - Enforces namespace isolation between teams and environments
+  # - Limits blast radius of misconfigurations
+  #
+  # NOTATION:
+  #   server:    Cluster API server URL (or * for any registered cluster)
+  #   namespace: Target namespace (or * for any namespace in the cluster)
+  #
+  # BEST PRACTICE:
+  # List explicit namespaces rather than using wildcards.
+  # This prevents Applications from creating resources in arbitrary namespaces.
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Least privilege access to production systems"
+  # Destination restrictions ensure workloads deploy only to their
+  # designated namespaces.
+  # ===========================================================================
+  destinations:
+    # -------------------------------------------------------------------------
+    # Compliant App Namespace
+    # -------------------------------------------------------------------------
+    # The compliant-app workload deploys to the compliant-app namespace.
+    # This is the security-hardened reference application.
+    # -------------------------------------------------------------------------
+    - server: https://kubernetes.default.svc
+      namespace: compliant-app
+
+    # -------------------------------------------------------------------------
+    # Vulnerable App Namespace
+    # -------------------------------------------------------------------------
+    # The vulnerable-app workload deploys to the vulnerable-app namespace.
+    # Used for security comparison demonstrations.
+    # -------------------------------------------------------------------------
+    - server: https://kubernetes.default.svc
+      namespace: vulnerable-app
+
+    # -------------------------------------------------------------------------
+    # Additional namespaces can be added as workloads grow.
+    # Each namespace should correspond to a specific application or team.
+    # -------------------------------------------------------------------------
+    # - server: https://kubernetes.default.svc
+    #   namespace: another-app
+
+  # ===========================================================================
+  # CLUSTER RESOURCE WHITELIST
+  # ===========================================================================
+  # Controls which cluster-scoped (non-namespaced) resource types
+  # Applications in this project can manage.
+  #
+  # WHY RESTRICT CLUSTER RESOURCES?
+  # Cluster-scoped resources (ClusterRoles, ClusterRoleBindings, Namespaces,
+  # PersistentVolumes, etc.) affect the entire cluster. Allowing Applications
+  # to manage them could:
+  # - Escalate privileges via ClusterRoleBindings
+  # - Affect other teams' workloads
+  # - Modify security policies (ClusterPolicies)
+  #
+  # APPROACH:
+  # Only whitelist cluster resources that Applications genuinely need.
+  # For most application workloads, only Namespace is necessary.
+  #
+  # REGULATORY CONTEXT (SOC 2 CC6.1):
+  # "Restrict privileged actions to authorized personnel"
+  # Limiting cluster-scoped resource management prevents privilege escalation.
+  # ===========================================================================
+  clusterResourceWhitelist:
+    # Allow Applications to manage Namespace resources.
+    # This enables CreateNamespace=true in sync options.
+    - group: ""
+      kind: Namespace
+
+  # ===========================================================================
+  # NAMESPACE RESOURCE BLACKLIST (optional)
+  # ===========================================================================
+  # Deny specific namespaced resource types within allowed destinations.
+  # Use this to prevent Applications from creating sensitive resources
+  # even within their own namespace.
+  #
+  # EXAMPLE: Prevent applications from managing their own NetworkPolicies
+  # (these should be managed by the platform team via a separate project).
+  # ===========================================================================
+  # namespaceResourceBlacklist:
+  #   - group: networking.k8s.io
+  #     kind: NetworkPolicy
+
+  # ===========================================================================
+  # ROLES
+  # ===========================================================================
+  # Project-scoped RBAC roles. These roles apply only to Applications
+  # within this project, providing fine-grained access control.
+  #
+  # SYNTAX:
+  #   p, proj:<project>:<role>, <resource>, <action>, <project>/<object>, allow
+  #
+  # RESOURCES: applications, logs, exec
+  # ACTIONS: get, create, update, delete, sync, override, action/*
+  #
+  # INTEGRATION WITH SSO:
+  # Roles are assigned to SSO groups in the global RBAC config (values.yaml).
+  # Project roles define what permissions exist; global RBAC maps groups
+  # to those roles.
+  #
+  # REGULATORY CONTEXT (FFIEC IT Handbook):
+  # "Role-based access controls with documented permissions"
+  # Each role is documented with its intended audience and capabilities.
+  # ===========================================================================
+  roles:
+    # -------------------------------------------------------------------------
+    # Deployer Role
+    # -------------------------------------------------------------------------
+    # For CI/CD pipelines and platform engineers who need to trigger syncs.
+    # Can view and sync applications but cannot modify project settings.
+    #
+    # INTENDED USERS:
+    # - CI/CD service accounts
+    # - Platform engineers during deployments
+    # - On-call engineers during incident response
+    # -------------------------------------------------------------------------
+    - name: deployer
+      description: >-
+        Can view applications, trigger syncs, and view logs.
+        Cannot modify project settings or delete applications.
+      policies:
+        - p, proj:regulated-apps:deployer, applications, get, regulated-apps/*, allow
+        - p, proj:regulated-apps:deployer, applications, sync, regulated-apps/*, allow
+        - p, proj:regulated-apps:deployer, applications, action/*, regulated-apps/*, allow
+        - p, proj:regulated-apps:deployer, logs, get, regulated-apps/*, allow
+
+      # Map SSO groups to this role (uncomment for your identity provider)
+      # groups:
+      #   - azure-ad-group:platform-engineers
+      #   - azure-ad-group:cicd-service-accounts
+
+    # -------------------------------------------------------------------------
+    # Viewer Role
+    # -------------------------------------------------------------------------
+    # For auditors, management, and developers who need visibility without
+    # the ability to make changes.
+    #
+    # INTENDED USERS:
+    # - Compliance auditors reviewing deployment history
+    # - Development team leads monitoring application status
+    # - Security teams investigating incidents
+    #
+    # REGULATORY CONTEXT (SOC 2 CC6.1):
+    # "Provide read-only access for audit and compliance functions"
+    # -------------------------------------------------------------------------
+    - name: viewer
+      description: >-
+        Read-only access to applications and logs for audit and monitoring.
+        Cannot trigger syncs, modify, or delete any resources.
+      policies:
+        - p, proj:regulated-apps:viewer, applications, get, regulated-apps/*, allow
+        - p, proj:regulated-apps:viewer, logs, get, regulated-apps/*, allow
+
+      # Map SSO groups to this role (uncomment for your identity provider)
+      # groups:
+      #   - azure-ad-group:auditors
+      #   - azure-ad-group:developers

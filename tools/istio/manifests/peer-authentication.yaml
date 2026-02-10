@@ -1,0 +1,106 @@
+# ABOUTME: Mesh-wide PeerAuthentication enforcing STRICT mTLS for all service traffic.
+# ABOUTME: Ensures every pod-to-pod connection is mutually authenticated and encrypted.
+# =============================================================================
+# PEER AUTHENTICATION - STRICT mTLS MESH-WIDE
+# =============================================================================
+#
+# WHAT IS PEER AUTHENTICATION?
+# PeerAuthentication defines how traffic is tunneled (or not) to the sidecar
+# proxy. It controls the mutual TLS requirements for inbound connections to
+# pods within the mesh.
+#
+# WHAT IS MUTUAL TLS (mTLS)?
+# Standard TLS (like HTTPS) only authenticates the server to the client.
+# Mutual TLS authenticates BOTH sides:
+#   - The client proves its identity to the server (via certificate)
+#   - The server proves its identity to the client (via certificate)
+#
+# In Istio's implementation:
+#   1. istiod acts as a Certificate Authority (CA)
+#   2. Each Envoy sidecar receives a unique SPIFFE identity certificate
+#      (e.g., spiffe://cluster.local/ns/compliant-app/sa/compliant-sa)
+#   3. When Pod A connects to Pod B, both Envoy sidecars perform a TLS
+#      handshake, verifying each other's certificates
+#   4. The application sees plain HTTP -- Envoy handles all crypto
+#   5. Certificates rotate automatically (default: 24 hours)
+#
+# mTLS MODES:
+#
+# | Mode        | Behavior                                              |
+# |-------------|-------------------------------------------------------|
+# | STRICT      | Only mTLS traffic accepted. Plain text is rejected.   |
+# | PERMISSIVE  | Accept both mTLS and plain text. Use during migration.|
+# | DISABLE     | No mTLS. All traffic is plain text. Never use this.   |
+# | UNSET       | Inherit from parent scope (namespace or mesh).        |
+#
+# WHY STRICT MODE FOR REGULATED ENVIRONMENTS?
+# PERMISSIVE mode allows unencrypted traffic, which means:
+#   - A compromised pod could sniff plain text traffic from neighboring pods
+#   - Network-level attackers could read inter-service communication
+#   - You cannot prove to auditors that ALL traffic is encrypted
+#
+# STRICT mode guarantees:
+#   - Every connection is encrypted with TLS 1.3 (or 1.2 minimum)
+#   - Both sides are cryptographically authenticated
+#   - No plain text traffic is possible between meshed services
+#   - Audit evidence: "All inter-service communication is mTLS-encrypted"
+#
+# SCOPE HIERARCHY:
+# PeerAuthentication can be applied at three levels:
+#   1. Mesh-wide (namespace: istio-system, no selector) -- baseline
+#   2. Namespace (namespace: <ns>, no selector) -- override for namespace
+#   3. Workload (namespace: <ns>, selector: <labels>) -- per-pod override
+#
+# The most specific match wins. This manifest sets the mesh-wide baseline.
+#
+# REGULATORY ALIGNMENT:
+#   - PCI-DSS 4.1: "Use strong cryptography and security protocols to
+#     safeguard sensitive data during transmission over open, public networks"
+#   - DORA Art.9: "ICT systems shall implement encryption for data in transit"
+#   - FFIEC: "Encrypt all sensitive information traversing networks"
+#   - NCUA Part 748: "Implement cryptographic controls for data protection"
+#   - SOC 2 CC6.6: "Implement logical access security measures"
+#
+# CERTIFICATE DETAILS:
+# Istio issues X.509 SVID certificates following the SPIFFE standard:
+#   - Identity: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
+#   - Key algorithm: ECDSA P-256 (default) or RSA 2048
+#   - Default TTL: 24 hours (configurable via pilot.env CITADEL vars)
+#   - Root CA: Self-signed by istiod, or integrate with Vault/cert-manager
+#
+# =============================================================================
+
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  # -------------------------------------------------------------------------
+  # Deployed to istio-system to apply mesh-wide.
+  # A PeerAuthentication in istio-system with no selector is the mesh default.
+  # Individual namespaces or workloads can override with their own policies.
+  # -------------------------------------------------------------------------
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/pci-dss: "req-4.1"
+    compliance.regulated/dora: "art-9"
+    compliance.regulated/soc2: "cc6.6"
+spec:
+  mtls:
+    # -----------------------------------------------------------------------
+    # STRICT: Reject any connection that does not present a valid mTLS
+    # certificate. This is the only acceptable mode for production regulated
+    # environments.
+    #
+    # If a service without a sidecar tries to connect to a meshed service,
+    # the connection will be refused. This is intentional -- it forces all
+    # services to be part of the mesh before they can communicate.
+    #
+    # MIGRATION TIP:
+    # If you need to onboard services gradually:
+    #   1. Set mesh-wide to PERMISSIVE (accept both plain and mTLS)
+    #   2. Add sidecars to all services
+    #   3. Monitor access logs for non-mTLS connections
+    #   4. Switch to STRICT once all services have sidecars
+    # -----------------------------------------------------------------------
+    mode: STRICT

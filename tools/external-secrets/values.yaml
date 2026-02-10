@@ -1,0 +1,168 @@
+# ABOUTME: Helm values for External Secrets Operator on AKS with workload identity.
+# ABOUTME: Lab-sized resources with full CRD install, webhook, and cert controller.
+#
+# =============================================================================
+# EXTERNAL SECRETS OPERATOR HELM CHART VALUES
+# =============================================================================
+# Tool:    External Secrets Operator - Kubernetes Secrets Sync
+# Chart:   external-secrets/external-secrets
+# Repo:    https://github.com/external-secrets/external-secrets
+# Docs:    https://external-secrets.io/latest/
+#
+# PURPOSE:
+# External Secrets Operator (ESO) synchronizes secrets from external providers
+# (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault, GCP Secret Manager)
+# into native Kubernetes Secrets. This eliminates secrets from Git, Helm values,
+# and CI/CD pipelines.
+#
+# WHY ESO FOR REGULATED INDUSTRIES?
+# 1. Secrets never transit Git or CI/CD pipelines
+# 2. Centralized secret lifecycle management in provider vaults
+# 3. Automatic rotation -- provider rotates, ESO syncs on refresh interval
+# 4. Workload identity auth eliminates long-lived credentials entirely
+# 5. Audit trail lives in the provider (Key Vault access logs, CloudTrail)
+#
+# REGULATORY CONTEXT:
+#   - NCUA/FFIEC: Credential management and rotation
+#   - SOC 2 CC6.1: Logical access -- secrets scoped per workload identity
+#   - SOC 2 CC6.7: Secrets management -- centralized in external vault
+#   - DORA Article 9: Access control and data protection
+#   - PCI-DSS Req 3.4: Protect stored credentials (encrypted in vault)
+#   - PCI-DSS Req 8: Access control (workload identity per application)
+#
+# ARCHITECTURE:
+#   ExternalSecret CR  --->  ESO Controller  --->  Azure Key Vault
+#          |                      |                   (provider)
+#          |                      v
+#          |               Kubernetes Secret
+#          +--- refreshInterval controls polling frequency
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CUSTOM RESOURCE DEFINITIONS
+# -----------------------------------------------------------------------------
+# Install CRDs as part of the Helm release. This ensures CRDs are managed
+# alongside the operator and upgraded together.
+#
+# CRDs INSTALLED:
+#   - ExternalSecret / ClusterExternalSecret
+#   - SecretStore / ClusterSecretStore
+#   - PushSecret (push K8s Secrets to external providers)
+#
+# WARNING:
+# Helm does not delete CRDs on uninstall (by design). If you need to remove
+# CRDs, delete them manually: kubectl delete crd -l app.kubernetes.io/name=external-secrets
+# -----------------------------------------------------------------------------
+installCRDs: true
+
+# -----------------------------------------------------------------------------
+# WEBHOOK
+# -----------------------------------------------------------------------------
+# The webhook validates ExternalSecret and SecretStore resources at admission
+# time, catching configuration errors before they reach the controller.
+#
+# WHAT IT VALIDATES:
+#   - SecretStore provider config is syntactically valid
+#   - ExternalSecret references an existing SecretStore
+#   - Data key mappings are well-formed
+#   - Refresh intervals are valid durations
+#
+# PRODUCTION:
+# Keep enabled. Without the webhook, invalid ExternalSecret resources silently
+# fail during reconciliation, which is harder to debug.
+# -----------------------------------------------------------------------------
+webhook:
+  create: true
+
+  # Resource limits for the webhook deployment
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# CERT CONTROLLER
+# -----------------------------------------------------------------------------
+# Manages TLS certificates for the webhook. Generates a self-signed CA and
+# issues certificates for webhook HTTPS endpoints.
+#
+# ALTERNATIVES:
+# If you run cert-manager in your cluster, you can disable the built-in cert
+# controller and let cert-manager manage webhook certificates instead:
+#   certController.create: false
+#   webhook.certManager.enabled: true
+# -----------------------------------------------------------------------------
+certController:
+  create: true
+
+  # Resource limits for the cert controller
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# OPERATOR CONTROLLER RESOURCES
+# -----------------------------------------------------------------------------
+# The main controller reconciles ExternalSecret resources and syncs secrets
+# from external providers into Kubernetes Secrets.
+#
+# SIZING RATIONALE (lab-sized):
+#   requests.cpu: 50m     -- Baseline for reconciliation loops
+#   requests.memory: 96Mi -- Holds provider clients and secret cache
+#   limits.cpu: 250m      -- Burst for bulk reconciliation after restart
+#   limits.memory: 192Mi  -- Headroom for large secret payloads
+#
+# PRODUCTION SIZING:
+# Scale based on number of ExternalSecret resources:
+#   <100 ExternalSecrets:   50m/96Mi  (these lab defaults)
+#   100-500:               100m/192Mi
+#   500+:                  250m/384Mi (consider multiple replicas)
+#
+# MONITORING:
+# Watch externalsecrets_sync_calls_total and
+# externalsecrets_sync_calls_error to detect sync failures.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 192Mi
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape ESO metrics.
+#
+# KEY METRICS:
+#   externalsecrets_sync_calls_total:        Total sync operations
+#   externalsecrets_sync_calls_error:        Failed sync operations
+#   externalsecrets_status_condition:        ExternalSecret status conditions
+#   externalsecrets_reconcile_duration:      Reconciliation latency
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical):
+#   - externalsecrets_sync_calls_error increasing over 5 minutes
+#   - ESO pods not running in external-secrets namespace
+#   - SecretStore status not Ready
+#
+# P2 (Warning):
+#   - Reconciliation duration P99 > 30s
+#   - Memory usage approaching limits
+#   - High number of pending ExternalSecrets
+#
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false

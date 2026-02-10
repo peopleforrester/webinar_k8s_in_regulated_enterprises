@@ -1,0 +1,220 @@
+# ABOUTME: Sample Argo CD ApplicationSet using a Git directory generator.
+# ABOUTME: Creates one Application per workload directory in the repository.
+# =============================================================================
+# ARGO CD APPLICATIONSET - GIT DIRECTORY GENERATOR
+# =============================================================================
+#
+# PURPOSE:
+# An ApplicationSet is a template that generates multiple Application CRDs
+# automatically. Instead of manually creating an Application for each
+# workload, the ApplicationSet discovers directories in a Git repository
+# and creates one Application per directory.
+#
+# WHY APPLICATIONSETS?
+# 1. DRY principle: Define the deployment pattern once, apply to many workloads
+# 2. Consistency: Every workload gets the same sync policy and project settings
+# 3. Automation: Adding a new workload directory in Git auto-creates its Application
+# 4. Scale: Manage hundreds of applications from a single template
+#
+# GENERATORS:
+# ApplicationSets support multiple generator types:
+#
+#   Git Directory: Create apps from directories in a repo (used here)
+#   Git File:      Create apps from a config file listing parameters
+#   Cluster:       Create apps for each registered Kubernetes cluster
+#   List:          Create apps from a static list of parameters
+#   Matrix:        Combine two generators (e.g., Cluster x Git Directory)
+#   Merge:         Merge parameters from multiple generators
+#   Pull Request:  Create apps for each open pull request (preview envs)
+#
+# PATTERN:
+# This example uses the Git Directory generator to scan the workloads/
+# directory and create one Application for each subdirectory:
+#
+#   workloads/
+#     compliant-app/    -> Application "compliant-app"
+#     vulnerable-app/   -> Application "vulnerable-app"
+#     future-app/       -> Application "future-app" (auto-created)
+#
+# REGULATORY CONTEXT:
+# ApplicationSets enforce consistent deployment patterns across workloads.
+#
+#   DORA Article 9:  "Consistent ICT change management across systems"
+#   SOC 2 CC8.1:     "Standardized change management procedures"
+#   NCUA/FFIEC:      "Uniform controls applied to all managed systems"
+#
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  # ---------------------------------------------------------------------------
+  # ApplicationSet Name
+  # ---------------------------------------------------------------------------
+  # Descriptive name for the set. This name appears in the Argo CD UI
+  # under the ApplicationSets section.
+  # ---------------------------------------------------------------------------
+  name: workload-apps
+  # ---------------------------------------------------------------------------
+  # Namespace
+  # ---------------------------------------------------------------------------
+  # Like Applications, ApplicationSets must live in the Argo CD namespace.
+  # ---------------------------------------------------------------------------
+  namespace: argocd
+spec:
+  # ===========================================================================
+  # GENERATORS
+  # ===========================================================================
+  # Generators produce parameters that are substituted into the template.
+  # Each parameter set generates one Application.
+  # ===========================================================================
+  generators:
+    # -------------------------------------------------------------------------
+    # Git Directory Generator
+    # -------------------------------------------------------------------------
+    # Scans a Git repository for directories matching the specified paths.
+    # Each discovered directory becomes a set of template parameters.
+    #
+    # GENERATED PARAMETERS:
+    #   {{path}}:              Full path (e.g., "workloads/compliant-app")
+    #   {{path.basename}}:     Directory name (e.g., "compliant-app")
+    #   {{path[0]}}:           First path segment (e.g., "workloads")
+    #   {{path[1]}}:           Second path segment (e.g., "compliant-app")
+    #
+    # HOW DISCOVERY WORKS:
+    # 1. Argo CD clones the repository
+    # 2. Lists directories matching the include patterns
+    # 3. Excludes directories matching the exclude patterns
+    # 4. For each remaining directory, generates an Application from template
+    #
+    # REFRESH INTERVAL:
+    # The generator re-scans the repository periodically (default 3 minutes).
+    # Adding a new workload directory in Git will auto-create its Application
+    # within the refresh interval.
+    # -------------------------------------------------------------------------
+    - git:
+        # The Git repository to scan for directories
+        repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+
+        # The branch/tag/commit to scan
+        revision: HEAD
+
+        directories:
+          # Include all directories under workloads/
+          - path: workloads/*
+
+          # ---------------------------------------------------------------
+          # Exclude Patterns (optional)
+          # ---------------------------------------------------------------
+          # Exclude directories that should not be managed by Argo CD.
+          # For example, exclude a "shared-configs" directory that contains
+          # common ConfigMaps but is not a standalone application.
+          #
+          # Syntax: Use path with "exclude: true" to negate a pattern.
+          # ---------------------------------------------------------------
+          # - path: workloads/shared-configs
+          #   exclude: true
+
+  # ===========================================================================
+  # TEMPLATE
+  # ===========================================================================
+  # The Application template used to generate individual Applications.
+  # Parameters from generators are substituted using {{parameter}} syntax.
+  #
+  # The template structure mirrors a standard Application CRD spec.
+  # ===========================================================================
+  template:
+    metadata:
+      # -----------------------------------------------------------------------
+      # Application Name
+      # -----------------------------------------------------------------------
+      # Uses the directory basename as the Application name.
+      # For workloads/compliant-app, this becomes "compliant-app".
+      # -----------------------------------------------------------------------
+      name: "{{path.basename}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/part-of: regulated-demo
+        app.kubernetes.io/managed-by: applicationset
+        environment: demo
+
+    spec:
+      # -----------------------------------------------------------------------
+      # Project
+      # -----------------------------------------------------------------------
+      # All generated Applications use the same project.
+      # The project enforces source/destination restrictions uniformly.
+      # See project.yaml for the regulated-apps project definition.
+      # -----------------------------------------------------------------------
+      project: regulated-apps
+
+      # -----------------------------------------------------------------------
+      # Source
+      # -----------------------------------------------------------------------
+      # Points to the discovered directory within the repository.
+      # {{path}} is the full path (e.g., "workloads/compliant-app").
+      # -----------------------------------------------------------------------
+      source:
+        repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+        targetRevision: HEAD
+        path: "{{path}}"
+
+      # -----------------------------------------------------------------------
+      # Destination
+      # -----------------------------------------------------------------------
+      # Deploys to the in-cluster API server.
+      # Namespace matches the directory name (each workload gets its own ns).
+      # -----------------------------------------------------------------------
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{path.basename}}"
+
+      # -----------------------------------------------------------------------
+      # Sync Policy
+      # -----------------------------------------------------------------------
+      # Applied uniformly to all generated Applications.
+      # This ensures consistent deployment behavior across workloads.
+      #
+      # NOTE: For production, consider manual sync with PR-based approvals
+      # instead of auto-sync. The ApplicationSet ensures the Application
+      # exists and is configured correctly; the sync policy controls when
+      # actual deployments occur.
+      # -----------------------------------------------------------------------
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 1m
+
+  # ===========================================================================
+  # STRATEGY
+  # ===========================================================================
+  # Controls how the ApplicationSet handles Application lifecycle events.
+  #
+  # syncPolicy here (on the ApplicationSet, not the Application) controls
+  # what happens when the generator removes a parameter set (e.g., when
+  # a workload directory is deleted from Git).
+  # ===========================================================================
+  # strategy:
+  #   type: RollingSync
+  #   rollingSync:
+  #     steps:
+  #       - matchExpressions:
+  #           - key: environment
+  #             operator: In
+  #             values:
+  #               - staging
+  #       - matchExpressions:
+  #           - key: environment
+  #             operator: In
+  #             values:
+  #               - production

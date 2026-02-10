@@ -1,0 +1,187 @@
+# ABOUTME: DestinationRule configuring mTLS settings and circuit breaker for the compliant app.
+# ABOUTME: Defines connection pool limits, outlier detection, and TLS origination policy.
+# =============================================================================
+# DESTINATION RULE - mTLS + CIRCUIT BREAKER CONFIGURATION
+# =============================================================================
+#
+# WHAT IS A DESTINATION RULE?
+# A DestinationRule configures what happens to traffic AFTER routing.
+# While VirtualService controls WHERE traffic goes, DestinationRule
+# controls HOW traffic reaches the destination.
+#
+# CAPABILITIES:
+#   - TLS settings for upstream connections
+#   - Load balancing algorithm selection
+#   - Connection pool sizing (circuit breaker)
+#   - Outlier detection (ejecting unhealthy endpoints)
+#   - Subsets for traffic splitting (canary, blue/green)
+#
+# WHY CIRCUIT BREAKERS FOR REGULATED ENVIRONMENTS?
+# Circuit breakers prevent cascade failures. When a downstream service
+# becomes unhealthy, the circuit breaker stops sending traffic to it,
+# protecting the rest of the system from being overwhelmed.
+#
+# Without circuit breakers:
+#   Service A --> Service B (failing) --> requests pile up --> A fails too
+#
+# With circuit breakers:
+#   Service A --> Circuit Breaker --> detects B is failing --> fails fast
+#   Service A remains healthy; B has time to recover
+#
+# REGULATORY ALIGNMENT:
+#   - DORA Art.11: "Capacity and performance management" (prevent overload)
+#   - DORA Art.9: "ICT systems shall be resilient" (circuit breakers)
+#   - SOC 2 CC7.1: "Detect and respond to system anomalies" (outlier detection)
+#   - NCUA: "Ensure operational resilience of critical systems"
+#   - PCI-DSS 4.1: "Use strong cryptography" (mTLS to backends)
+#
+# =============================================================================
+
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: compliant-app
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/dora: "art-11"
+    compliance.regulated/pci-dss: "req-4.1"
+spec:
+  # ---------------------------------------------------------------------------
+  # Target Host
+  # ---------------------------------------------------------------------------
+  # The Kubernetes Service this DestinationRule applies to.
+  # Use the full FQDN for clarity and to avoid ambiguity.
+  # ---------------------------------------------------------------------------
+  host: compliant-app.compliant-app.svc.cluster.local
+
+  # ---------------------------------------------------------------------------
+  # TRAFFIC POLICY
+  # ---------------------------------------------------------------------------
+  # Applies to all traffic destined for this host, across all subsets.
+  # Subset-level overrides can be defined below for per-version settings.
+  # ---------------------------------------------------------------------------
+  trafficPolicy:
+    # -------------------------------------------------------------------------
+    # TLS Settings
+    # -------------------------------------------------------------------------
+    # Controls how the sidecar initiates TLS connections to the upstream.
+    #
+    # TLS MODES:
+    # | Mode            | Description                                        |
+    # |-----------------|----------------------------------------------------|
+    # | DISABLE         | No TLS. Plain text. Never use in regulated envs.   |
+    # | SIMPLE          | Standard TLS (server auth only).                   |
+    # | MUTUAL          | mTLS with explicit client certs.                   |
+    # | ISTIO_MUTUAL    | mTLS using Istio-managed certificates (recommended)|
+    #
+    # ISTIO_MUTUAL:
+    # Uses certificates automatically provisioned and rotated by istiod.
+    # No manual certificate management required. The SPIFFE identity
+    # embedded in the certificate provides cryptographic service identity.
+    #
+    # Combined with STRICT PeerAuthentication, this ensures:
+    #   1. Client sidecar sends mTLS with Istio-issued cert
+    #   2. Server sidecar validates the cert against the mesh CA
+    #   3. Both sides are cryptographically authenticated
+    #   4. All traffic is encrypted with TLS 1.2+ (TLS 1.3 preferred)
+    # -------------------------------------------------------------------------
+    tls:
+      mode: ISTIO_MUTUAL
+
+    # -------------------------------------------------------------------------
+    # Connection Pool Settings (Circuit Breaker)
+    # -------------------------------------------------------------------------
+    # Limits on the number of connections and requests to the upstream.
+    # When limits are exceeded, additional requests are rejected immediately
+    # (fail fast) rather than queuing indefinitely.
+    #
+    # WHY CIRCUIT BREAKERS MATTER:
+    # In microservice architectures, a slow or failing service can cause
+    # cascading failures across the entire system. Connection limits prevent
+    # a single troubled service from consuming all available connections
+    # and resources.
+    #
+    # TUNING GUIDANCE:
+    # Start with conservative limits and increase based on observed traffic:
+    #   - Monitor istio_requests_total and connection pool metrics
+    #   - Track upstream_cx_overflow for connection limit hits
+    #   - Track upstream_rq_pending_overflow for request limit hits
+    #   - Increase limits if legitimate traffic is being rejected
+    # -------------------------------------------------------------------------
+    connectionPool:
+      tcp:
+        # Maximum number of TCP connections to the upstream.
+        # Each connection consumes a file descriptor and memory on both sides.
+        maxConnections: 100
+
+        # TCP connection timeout. Connections that take longer to establish
+        # are aborted. Prevents hanging connections to unresponsive endpoints.
+        connectTimeout: 5s
+
+      http:
+        # Maximum number of HTTP requests queued while waiting for a
+        # connection. When this limit is exceeded, requests are rejected
+        # immediately with a 503 (Service Unavailable).
+        h2UpgradePolicy: DEFAULT
+
+        # Maximum concurrent HTTP/1.1 requests per connection.
+        http1MaxPendingRequests: 100
+
+        # Maximum concurrent HTTP/2 requests to the upstream.
+        http2MaxRequests: 1000
+
+        # Maximum number of requests that can be queued when all connections
+        # are busy. Acts as a backpressure mechanism.
+        maxRequestsPerConnection: 10
+
+        # Maximum number of retries outstanding at any time.
+        # Prevents retry storms from amplifying failures.
+        maxRetries: 3
+
+    # -------------------------------------------------------------------------
+    # Outlier Detection (Endpoint Health)
+    # -------------------------------------------------------------------------
+    # Automatically ejects unhealthy upstream endpoints from the load
+    # balancing pool. This is the passive health checking component of
+    # the circuit breaker pattern.
+    #
+    # HOW IT WORKS:
+    # 1. Envoy tracks error rates per upstream endpoint
+    # 2. When an endpoint exceeds the error threshold, it is ejected
+    # 3. Ejected endpoints receive no traffic for the ejection duration
+    # 4. After the ejection period, the endpoint is re-added (probed)
+    # 5. If still unhealthy, ejection duration increases exponentially
+    #
+    # BENEFITS:
+    # - Unhealthy pods are automatically removed from rotation
+    # - Healthy pods are not impacted by a failing peer
+    # - Faster recovery when combined with Kubernetes health probes
+    #
+    # REGULATORY CONTEXT (DORA Art.11):
+    # "Implement mechanisms for the prompt detection of anomalous
+    # activities" -- outlier detection automatically identifies and
+    # isolates failing service instances.
+    # -------------------------------------------------------------------------
+    outlierDetection:
+      # Number of consecutive 5xx errors before ejecting an endpoint.
+      # Lower values eject faster but risk false positives during transients.
+      consecutive5xxErrors: 3
+
+      # Time window for counting errors. Errors outside this window are
+      # not counted. Shorter intervals are more responsive but noisier.
+      interval: 30s
+
+      # Duration an ejected endpoint stays out of the pool.
+      # Subsequent ejections increase this duration exponentially.
+      baseEjectionTime: 30s
+
+      # Maximum percentage of endpoints that can be ejected simultaneously.
+      # Prevents ejecting all endpoints during a widespread issue.
+      # With 2 replicas and 50%, at most 1 replica can be ejected.
+      maxEjectionPercent: 50
+
+      # Minimum number of healthy endpoints required to keep the circuit open.
+      # If healthy endpoints drop below this, ejection is paused to maintain
+      # some level of service availability.
+      minHealthPercent: 50

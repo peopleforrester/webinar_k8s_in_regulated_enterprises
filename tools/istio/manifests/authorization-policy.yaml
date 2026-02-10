@@ -1,0 +1,187 @@
+# ABOUTME: AuthorizationPolicy implementing zero-trust service-to-service access control.
+# ABOUTME: Restricts which services can communicate with the compliant app by SPIFFE identity.
+# =============================================================================
+# AUTHORIZATION POLICY - ZERO-TRUST SERVICE COMMUNICATION
+# =============================================================================
+#
+# WHAT IS AN AUTHORIZATION POLICY?
+# AuthorizationPolicy controls which services are allowed to communicate
+# with which other services in the mesh. It enforces least-privilege
+# networking at Layer 7 (HTTP) or Layer 4 (TCP), using cryptographic
+# service identity (SPIFFE) rather than IP addresses.
+#
+# WHY NOT USE NETWORK POLICIES ALONE?
+# Kubernetes NetworkPolicies operate at Layer 3/4 (IP and port). They have
+# limitations in dynamic environments:
+#   - Pod IPs change on restart (policies based on IPs are fragile)
+#   - No identity verification (any pod with the right IP can connect)
+#   - No Layer 7 controls (can't restrict by HTTP method or path)
+#
+# Istio AuthorizationPolicy adds:
+#   - Identity-based access (verified by mTLS certificate)
+#   - Layer 7 controls (restrict by HTTP method, path, headers)
+#   - Deny-by-default when a policy exists with no matching rules
+#   - Integration with external authorization (OPA, custom gRPC)
+#
+# BEST PRACTICE: Use both NetworkPolicy AND AuthorizationPolicy for
+# defense in depth. NetworkPolicy provides L3/L4 guardrails,
+# AuthorizationPolicy provides L7 identity-based access control.
+#
+# ZERO-TRUST NETWORKING:
+# The zero-trust model assumes no implicit trust based on network location.
+# Every request must be authenticated and authorized regardless of whether
+# it originates from inside or outside the cluster.
+#
+# Istio implements zero-trust through:
+#   1. mTLS (PeerAuthentication) -- authenticate every connection
+#   2. AuthorizationPolicy -- authorize every request
+#   3. Access logging -- audit every interaction
+#
+# POLICY ACTION TYPES:
+#
+# | Action | Behavior                                              |
+# |--------|-------------------------------------------------------|
+# | ALLOW  | Permit matching requests. Deny everything else.       |
+# | DENY   | Reject matching requests. Allow everything else.      |
+# | CUSTOM | Delegate to external authorizer (e.g., OPA, Authzed). |
+# | AUDIT  | Log matching requests without enforcing.               |
+#
+# EVALUATION ORDER:
+#   1. CUSTOM policies evaluated first
+#   2. DENY policies evaluated second (if any match, request is denied)
+#   3. ALLOW policies evaluated last (if any exist, request must match one)
+#
+# If no policies exist for a workload, all traffic is allowed (fail-open).
+# As soon as you apply any ALLOW policy, unmatched traffic is denied.
+#
+# REGULATORY ALIGNMENT:
+#   - PCI-DSS 7.1: "Limit access to system components to only those
+#     individuals whose job requires such access"
+#   - SOC 2 CC6.1: "Logical access security over protected information"
+#   - DORA Art.9(4)(c): "Strong authentication and access controls"
+#   - NCUA: "Implement least privilege for all system interactions"
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# POLICY 1: Default Deny for compliant-app Namespace
+# -----------------------------------------------------------------------------
+# When this ALLOW policy exists with no rules, it denies all traffic to any
+# workload in the namespace that doesn't match a more specific ALLOW policy.
+# This establishes a deny-by-default baseline for the namespace.
+#
+# WHY DEFAULT DENY?
+# Without an explicit deny, any service in the mesh can reach any other
+# service. Default deny ensures only explicitly permitted communication
+# paths exist -- the foundation of zero-trust networking.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/pci-dss: "req-7.1"
+    compliance.regulated/soc2: "cc6.1"
+spec:
+  # No rules = deny all traffic to workloads in this namespace.
+  # More specific ALLOW policies below open specific paths.
+  {}
+
+---
+# -----------------------------------------------------------------------------
+# POLICY 2: Allow Ingress Gateway to Compliant App
+# -----------------------------------------------------------------------------
+# Permits the Istio ingress gateway to forward external traffic to the
+# compliant app. Without this policy, the gateway cannot reach the app
+# even though it is part of the mesh.
+#
+# IDENTITY-BASED ACCESS:
+# The "from" source uses the service account principal, which maps to the
+# SPIFFE identity verified by mTLS:
+#   spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+#
+# This means only the ingress gateway (proven by its certificate) can send
+# traffic to the compliant app on the specified paths.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-gateway-to-compliant-app
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/pci-dss: "req-7.1"
+spec:
+  selector:
+    matchLabels:
+      app: compliant-app
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # ---------------------------------------------------------------
+            # SPIFFE Identity Match
+            # ---------------------------------------------------------------
+            # Only the ingress gateway service account can reach the app.
+            # This identity is cryptographically verified via mTLS -- it
+            # cannot be spoofed by a pod using a different service account.
+            # ---------------------------------------------------------------
+            principals:
+              - cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+      to:
+        - operation:
+            # ---------------------------------------------------------------
+            # Restrict to specific HTTP methods and paths.
+            # The ingress gateway should only forward GET requests to
+            # the application's public endpoints.
+            #
+            # SECURITY RATIONALE:
+            # Limiting methods prevents the gateway from being used as a
+            # vector for unexpected write operations.
+            # ---------------------------------------------------------------
+            methods: ["GET"]
+            paths: ["/*"]
+            ports: ["8080"]
+
+---
+# -----------------------------------------------------------------------------
+# POLICY 3: Allow Prometheus to Scrape Metrics
+# -----------------------------------------------------------------------------
+# Monitoring tools must be able to reach the Envoy sidecar's metrics
+# endpoint. Without this policy, Prometheus cannot scrape mesh metrics.
+#
+# WHY ALLOW MONITORING?
+# Access to metrics is essential for:
+#   - Detecting anomalous traffic patterns (DORA Art.10)
+#   - Capacity monitoring (DORA Art.11)
+#   - Compliance dashboards (SOC 2 CC7.2)
+#   - Alerting on policy violations
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/dora: "art-10"
+spec:
+  selector:
+    matchLabels:
+      app: compliant-app
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Allow Prometheus from the monitoring namespace
+            namespaces:
+              - monitoring
+              - prometheus
+      to:
+        - operation:
+            # Envoy exposes metrics on port 15020 at /stats/prometheus
+            ports: ["15020"]
+            methods: ["GET"]
+            paths: ["/stats/prometheus"]

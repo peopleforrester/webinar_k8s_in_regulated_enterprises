@@ -1,0 +1,566 @@
+# ABOUTME: Helm values for Argo CD (argo/argo-cd chart) in a regulated AKS environment.
+# ABOUTME: Lab-sized config with heavy comments explaining production considerations.
+# =============================================================================
+# ARGO CD HELM CHART VALUES
+# =============================================================================
+# Chart:   argo/argo-cd
+# Repo:    https://github.com/argoproj/argo-helm
+# Docs:    https://argo-cd.readthedocs.io/
+#
+# PURPOSE:
+# Argo CD is a CNCF Graduated project that provides declarative, GitOps
+# continuous delivery for Kubernetes. It watches Git repositories and
+# automatically synchronizes cluster state to match the desired state in Git.
+#
+# WHY ARGO CD FOR REGULATED INDUSTRIES?
+# 1. Every deployment is traceable to a Git commit (audit trail)
+# 2. Approval gates via PR workflows before sync (change management)
+# 3. Automatic drift detection and correction (configuration compliance)
+# 4. RBAC and SSO integration (access control and separation of duties)
+# 5. Built-in rollback to any previous Git revision (disaster recovery)
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Change management controls for IT systems"
+#   - FFIEC IT Handbook: "All changes documented, approved, and tested"
+#   - DORA Article 9: "ICT change management procedures"
+#   - PCI-DSS Req 6.5: "Change control procedures for system components"
+#   - SOC 2 CC8.1: "Changes are authorized, designed, and implemented"
+#
+# ARCHITECTURE:
+# +------------------+   +------------------+   +------------------+
+# | Application      |   | Repo Server      |   | Redis            |
+# | Controller       |   | (manifest gen)   |   | (cache)          |
+# +--------+---------+   +--------+---------+   +--------+---------+
+#          |                      |                      |
+#          v                      v                      v
+#    Reconciles App         Clones repos,          Caches manifests
+#    CRDs against           renders Helm/          and repo state
+#    live state             Kustomize
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GLOBAL SETTINGS
+# -----------------------------------------------------------------------------
+global:
+  # ---------------------------------------------------------------------------
+  # Image Settings
+  # ---------------------------------------------------------------------------
+  # Pin the image tag for reproducible deployments.
+  # In production, consider using image digests for immutability.
+  # ---------------------------------------------------------------------------
+  # image:
+  #   tag: "v2.13.3"
+
+  # ---------------------------------------------------------------------------
+  # Logging
+  # ---------------------------------------------------------------------------
+  # Log level for all components. Options: debug, info, warn, error.
+  # Use "info" for production, "debug" for troubleshooting.
+  # ---------------------------------------------------------------------------
+  logging:
+    level: info
+
+# -----------------------------------------------------------------------------
+# SERVER (UI/API)
+# -----------------------------------------------------------------------------
+# The Argo CD server provides the web dashboard and gRPC/REST API.
+# Users interact with Argo CD primarily through the UI or CLI, both of
+# which communicate with the server component.
+#
+# ACCESS METHODS:
+#   1. Port-forward (lab/dev):  kubectl port-forward svc/argocd-server 8080:443
+#   2. Ingress (production):    Use an Ingress controller with TLS termination
+#   3. LoadBalancer:            Direct cloud LB (less common, less secure)
+#
+# SECURITY CONSIDERATIONS:
+#   - Always use TLS (HTTPS) for the server
+#   - Configure SSO instead of local accounts in production
+#   - Use network policies to restrict access to the server
+#
+# REPLICAS:
+# Lab: 1 replica is sufficient.
+# Production: 2+ replicas behind a load balancer for HA.
+# -----------------------------------------------------------------------------
+server:
+  replicas: 1
+
+  # ---------------------------------------------------------------------------
+  # Service Configuration
+  # ---------------------------------------------------------------------------
+  # ClusterIP: Access via port-forward or Ingress (recommended for security).
+  # LoadBalancer: Direct external access (requires additional network security).
+  # NodePort: For development clusters without an Ingress controller.
+  # ---------------------------------------------------------------------------
+  service:
+    type: ClusterIP
+
+  # ---------------------------------------------------------------------------
+  # Ingress Configuration (Commented -- enable for production)
+  # ---------------------------------------------------------------------------
+  # For production, expose the server via an Ingress controller with TLS.
+  # Azure Application Gateway or NGINX Ingress Controller are common choices.
+  #
+  # REGULATORY CONTEXT (PCI-DSS Req 1.3):
+  # "Prohibit direct public access between the Internet and the CDE"
+  # Use an Ingress controller with WAF capabilities for defense in depth.
+  # ---------------------------------------------------------------------------
+  # ingress:
+  #   enabled: true
+  #   ingressClassName: nginx
+  #   annotations:
+  #     cert-manager.io/cluster-issuer: letsencrypt-prod
+  #     nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+  #     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+  #   hosts:
+  #     - argocd.example.com
+  #   tls:
+  #     - secretName: argocd-tls
+  #       hosts:
+  #         - argocd.example.com
+
+  # ---------------------------------------------------------------------------
+  # Resource Configuration
+  # ---------------------------------------------------------------------------
+  # Lab-sized resources. Production should increase based on the number of
+  # concurrent users and API requests.
+  #
+  # SIZING GUIDANCE:
+  #   < 50 applications:   250m/256Mi
+  #   50-200 applications: 500m/512Mi
+  #   200+ applications:   1000m/1Gi
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# APPLICATION CONTROLLER
+# -----------------------------------------------------------------------------
+# The core reconciliation engine that watches Application CRDs and compares
+# live cluster state against the desired state defined in Git.
+#
+# HOW IT WORKS:
+# 1. Watches Application CRDs for changes
+# 2. Fetches desired manifests from Repo Server
+# 3. Compares desired state against live cluster state
+# 4. Reports drift (OutOfSync) or triggers sync (if auto-sync enabled)
+# 5. Updates Application status with health and sync information
+#
+# REPLICAS:
+# Lab: 1 replica. The controller uses leader election, so additional
+# replicas provide HA but only one is active at a time.
+# Production: 2 replicas for failover.
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "ICT systems shall implement change management controls"
+# The application controller is the enforcement point -- it ensures the
+# cluster matches the approved state in Git.
+# -----------------------------------------------------------------------------
+controller:
+  replicas: 1
+
+  # ---------------------------------------------------------------------------
+  # Resource Configuration
+  # ---------------------------------------------------------------------------
+  # The controller's resource usage scales with the number of applications
+  # and the frequency of reconciliation.
+  #
+  # SIZING GUIDANCE:
+  #   < 50 applications:   250m/256Mi
+  #   50-200 applications: 500m/1Gi
+  #   200+ applications:   1000m/2Gi (consider sharding)
+  #
+  # SHARDING:
+  # For large-scale deployments (200+ apps), enable controller sharding
+  # to distribute applications across multiple controller instances.
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# REPO SERVER
+# -----------------------------------------------------------------------------
+# Clones Git repositories and generates Kubernetes manifests from Helm charts,
+# Kustomize overlays, Jsonnet, or plain YAML.
+#
+# HOW IT WORKS:
+# 1. Receives manifest generation requests from the Application Controller
+# 2. Clones or fetches the target Git repository
+# 3. Renders manifests using the appropriate tool (Helm, Kustomize, etc.)
+# 4. Returns rendered manifests to the Application Controller
+# 5. Caches results in Redis to avoid redundant Git operations
+#
+# SECURITY CONSIDERATIONS:
+# - The Repo Server has read access to all configured Git repositories
+# - It processes Helm templates, which can include arbitrary functions
+# - Run with restricted permissions and resource limits
+#
+# REPLICAS:
+# Lab: 1 replica.
+# Production: 2+ replicas for throughput and availability.
+# -----------------------------------------------------------------------------
+repoServer:
+  replicas: 1
+
+  # ---------------------------------------------------------------------------
+  # Resource Configuration
+  # ---------------------------------------------------------------------------
+  # Repo Server resource usage depends on the number of repositories,
+  # chart complexity, and rendering frequency.
+  #
+  # SIZING GUIDANCE:
+  #   < 20 repos:   250m/256Mi
+  #   20-100 repos:  500m/512Mi
+  #   100+ repos:    1000m/1Gi
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# REDIS
+# -----------------------------------------------------------------------------
+# In-memory cache for manifest rendering results, repository metadata, and
+# application state. Reduces load on the Repo Server and Git providers.
+#
+# MODES:
+#   standalone: Single Redis instance (lab/dev)
+#   sentinel:   Redis with Sentinel for HA (production)
+#   external:   Use an external Redis service (Azure Cache for Redis)
+#
+# PRODUCTION CONSIDERATIONS:
+# - Enable Redis Sentinel for automatic failover
+# - Or use Azure Cache for Redis (managed, HA, encrypted at rest)
+# - Configure maxmemory-policy to evict least-recently-used entries
+# -----------------------------------------------------------------------------
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# RBAC CONFIGURATION
+# -----------------------------------------------------------------------------
+# Argo CD RBAC controls what users and groups can do within Argo CD.
+# Policies are defined in CSV format using Casbin syntax.
+#
+# SYNTAX:
+#   p, <subject>, <resource>, <action>, <object>, <effect>
+#   g, <user/group>, <role>
+#
+# RESOURCES: applications, projects, repositories, clusters, logs, exec
+# ACTIONS: get, create, update, delete, sync, override, action
+# EFFECTS: allow, deny
+#
+# REGULATORY CONTEXT (NCUA/FFIEC):
+# "Implement role-based access controls with separation of duties"
+# Define distinct roles for platform engineers (admin), developers
+# (project-scoped), and auditors (read-only).
+#
+# SSO GROUP MAPPING:
+# When SSO is configured, map Azure AD groups to Argo CD roles.
+# This centralizes identity management and enables MFA enforcement.
+# -----------------------------------------------------------------------------
+configs:
+  rbac:
+    # -------------------------------------------------------------------------
+    # Default Policy
+    # -------------------------------------------------------------------------
+    # Applied to authenticated users who do not match any specific policy.
+    # "role:readonly" is a safe default -- users can view but not modify.
+    #
+    # Options:
+    #   role:readonly  -- View applications, projects, and settings
+    #   role:admin     -- Full access (only for break-glass scenarios)
+    #   ""             -- No access (most restrictive default)
+    # -------------------------------------------------------------------------
+    policy.default: role:readonly
+
+    # -------------------------------------------------------------------------
+    # RBAC Policies
+    # -------------------------------------------------------------------------
+    # Define granular access control for different roles and groups.
+    #
+    # EXAMPLE ROLES:
+    #   role:admin     -- Full access to all resources
+    #   role:readonly  -- Read-only access to all resources
+    #   role:deployer  -- Can sync applications but not modify settings
+    #
+    # SEPARATION OF DUTIES (SOC 2 CC6.1):
+    # - Developers commit code to Git (no direct cluster access)
+    # - Platform engineers manage Argo CD configuration
+    # - Auditors have read-only access for compliance review
+    # - Automated sync handles deployment (no human intervention)
+    # -------------------------------------------------------------------------
+    policy.csv: |
+      # Deployer role: can sync and view applications, but not modify Argo CD config
+      p, role:deployer, applications, get, */*, allow
+      p, role:deployer, applications, sync, */*, allow
+      p, role:deployer, applications, action/*, */*, allow
+      p, role:deployer, logs, get, */*, allow
+
+      # Map SSO groups to roles (uncomment and adjust for your identity provider)
+      # g, "azure-ad-group:platform-engineers", role:admin
+      # g, "azure-ad-group:developers", role:deployer
+      # g, "azure-ad-group:auditors", role:readonly
+
+  # ---------------------------------------------------------------------------
+  # Repository Credentials
+  # ---------------------------------------------------------------------------
+  # Configure credentials for private Git repositories. Argo CD supports
+  # SSH keys, HTTPS tokens, and GitHub App credentials.
+  #
+  # SECURITY BEST PRACTICES:
+  # - Use deploy keys with read-only access (not personal tokens)
+  # - Rotate credentials on a regular schedule
+  # - Store credentials in Kubernetes Secrets or external secret stores
+  # - Use separate credentials per repository (blast radius reduction)
+  #
+  # AZURE DEVOPS:
+  # Azure DevOps repositories use HTTPS with PAT tokens or SSH deploy keys.
+  # PAT tokens should have "Code (Read)" scope only.
+  # ---------------------------------------------------------------------------
+  repositories: {}
+    # -------------------------------------------------------------------------
+    # GitHub SSH Example
+    # -------------------------------------------------------------------------
+    # my-private-repo:
+    #   url: git@github.com:org/repo.git
+    #   sshPrivateKeySecret:
+    #     name: github-ssh-key
+    #     key: sshPrivateKey
+
+    # -------------------------------------------------------------------------
+    # Azure DevOps HTTPS Example
+    # -------------------------------------------------------------------------
+    # azure-devops-repo:
+    #   url: https://dev.azure.com/org/project/_git/repo
+    #   passwordSecret:
+    #     name: azure-devops-pat
+    #     key: token
+    #   usernameSecret:
+    #     name: azure-devops-pat
+    #     key: username
+
+    # -------------------------------------------------------------------------
+    # GitHub App Example (Recommended for organizations)
+    # -------------------------------------------------------------------------
+    # github-app-repo:
+    #   url: https://github.com/org/repo.git
+    #   githubAppID: "12345"
+    #   githubAppInstallationID: "67890"
+    #   githubAppPrivateKeySecret:
+    #     name: github-app-key
+    #     key: privateKey
+
+  # ---------------------------------------------------------------------------
+  # Argo CD Configuration (argocd-cm ConfigMap)
+  # ---------------------------------------------------------------------------
+  cm:
+    # -------------------------------------------------------------------------
+    # Resource Tracking Method
+    # -------------------------------------------------------------------------
+    # How Argo CD tracks which resources belong to an Application.
+    #
+    # OPTIONS:
+    #   label:      Uses app.kubernetes.io/instance label (legacy default)
+    #   annotation: Uses argocd.argoproj.io/tracking-id annotation (recommended)
+    #   annotation+label: Both (migration mode)
+    #
+    # WHY ANNOTATION?
+    # - Labels have a 63-character limit; annotations do not
+    # - Avoids conflicts with other tools that set the instance label
+    # - Required for ApplicationSets that manage overlapping resources
+    # -------------------------------------------------------------------------
+    application.resourceTrackingMethod: annotation
+
+    # -------------------------------------------------------------------------
+    # Status Badge (optional)
+    # -------------------------------------------------------------------------
+    # Enables status badges that can be embedded in README files.
+    # Useful for visibility into deployment status from Git repositories.
+    # -------------------------------------------------------------------------
+    statusbadge.enabled: "true"
+
+    # -------------------------------------------------------------------------
+    # Admin Account
+    # -------------------------------------------------------------------------
+    # Disable the built-in admin account when SSO is configured.
+    # Keep enabled for lab environments and break-glass scenarios.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 8.5):
+    # "Do not use shared or generic accounts"
+    # In production, disable admin and require individual SSO accounts.
+    # -------------------------------------------------------------------------
+    admin.enabled: "true"
+
+    # -------------------------------------------------------------------------
+    # Dex / SSO Configuration (Commented -- enable for production)
+    # -------------------------------------------------------------------------
+    # Dex is an OIDC identity provider bundled with Argo CD. It federates
+    # authentication to external identity providers (Azure AD, Okta, LDAP).
+    #
+    # WHY SSO FOR REGULATED ENVIRONMENTS?
+    # - Centralized identity management
+    # - MFA enforcement via identity provider
+    # - Individual accountability (no shared accounts)
+    # - Automatic deprovisioning when user leaves organization
+    #
+    # REGULATORY CONTEXT (FFIEC Authentication Guidance):
+    # "Multi-factor authentication for access to critical systems"
+    # -------------------------------------------------------------------------
+    # dex.config: |
+    #   connectors:
+    #     - type: microsoft
+    #       id: azure-ad
+    #       name: Azure AD
+    #       config:
+    #         clientID: $argocd-dex-secret:AZURE_CLIENT_ID
+    #         clientSecret: $argocd-dex-secret:AZURE_CLIENT_SECRET
+    #         tenant: $argocd-dex-secret:AZURE_TENANT_ID
+    #         redirectURI: https://argocd.example.com/api/dex/callback
+    #         groups:
+    #           - platform-engineers
+    #           - developers
+    #           - auditors
+
+    # -------------------------------------------------------------------------
+    # Resource Exclusions
+    # -------------------------------------------------------------------------
+    # Exclude noisy or frequently-changing resources from tracking.
+    # Reduces API server load and removes noise from the UI.
+    # -------------------------------------------------------------------------
+    resource.exclusions: |
+      - apiGroups:
+          - "events.k8s.io"
+        kinds:
+          - Event
+        clusters:
+          - "*"
+
+# -----------------------------------------------------------------------------
+# NOTIFICATIONS CONTROLLER
+# -----------------------------------------------------------------------------
+# Sends alerts on application sync events (success, failure, health changes)
+# to external systems: Slack, Microsoft Teams, email, or generic webhooks.
+#
+# WHY NOTIFICATIONS MATTER FOR COMPLIANCE:
+# - Immediate awareness of deployment failures (DORA Art.9 incident response)
+# - Audit trail of notification delivery (SOC 2 CC7.2)
+# - Automated escalation for failed deployments
+#
+# CONFIGURATION:
+# Notification templates and triggers are configured via ConfigMap.
+# See: https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/
+# -----------------------------------------------------------------------------
+notifications:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# APPLICATIONSET CONTROLLER
+# -----------------------------------------------------------------------------
+# Generates Application CRDs from templates using generators:
+#   - Git generator: Create apps from directories or files in a repo
+#   - Cluster generator: Create apps for each registered cluster
+#   - List generator: Create apps from a static list
+#   - Matrix/Merge generators: Combine multiple generators
+#
+# USE CASES:
+# - Multi-environment deployments (dev/staging/prod from one template)
+# - Multi-cluster deployments (same app across multiple clusters)
+# - Monorepo patterns (one Application per directory)
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "Consistent deployment procedures across environments"
+# ApplicationSets ensure the same deployment pattern is applied uniformly.
+# -----------------------------------------------------------------------------
+applicationSet:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# DEX (SSO PROVIDER)
+# -----------------------------------------------------------------------------
+# Dex is bundled with Argo CD as an OIDC provider. Disable if using an
+# external OIDC provider directly, or enable for SSO via Azure AD, Okta, etc.
+#
+# For lab environments, Dex is not needed (local admin account is sufficient).
+# For production, enable Dex and configure the connector in configs.cm above.
+# -----------------------------------------------------------------------------
+dex:
+  enabled: false
+
+  # Enable for production with SSO:
+  # enabled: true
+  # resources:
+  #   requests:
+  #     cpu: 50m
+  #     memory: 64Mi
+  #   limits:
+  #     cpu: 100m
+  #     memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Argo CD metrics.
+#
+# KEY METRICS:
+#   argocd_app_info:                    Application metadata and status
+#   argocd_app_sync_total:              Total sync operations (success/failure)
+#   argocd_app_reconcile_duration:      Reconciliation loop duration
+#   argocd_git_request_total:           Git operations count
+#   argocd_git_request_duration:        Git operation latency
+#   argocd_cluster_api_resources:       Cluster resource count
+#
+# ALERTING RECOMMENDATIONS:
+#
+# P1 (Critical):
+#   - Application health status Degraded for > 15 minutes
+#   - Sync failures on production applications
+#   - Argo CD components not running
+#
+# P2 (Warning):
+#   - Applications OutOfSync for > 30 minutes
+#   - Git request latency P99 > 10s
+#   - High reconciliation duration
+#
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false

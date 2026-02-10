@@ -1,0 +1,214 @@
+# ABOUTME: Istio Gateway and VirtualService for ingress routing to the compliant app.
+# ABOUTME: Configures TLS termination and HTTP routing at the mesh boundary.
+# =============================================================================
+# ISTIO GATEWAY + VIRTUAL SERVICE - INGRESS CONFIGURATION
+# =============================================================================
+#
+# WHAT IS AN ISTIO GATEWAY?
+# A Gateway configures a load balancer operating at the edge of the mesh,
+# receiving incoming HTTP/TCP connections. It specifies which ports, protocols,
+# and hostnames the mesh should listen on for external traffic.
+#
+# The Gateway works with a VirtualService to define the full routing path:
+#   External Client --> Gateway (TLS, host matching) --> VirtualService (routing) --> Service
+#
+# GATEWAY VS KUBERNETES INGRESS:
+#
+# | Feature              | K8s Ingress      | Istio Gateway           |
+# |----------------------|------------------|-------------------------|
+# | TLS termination      | Yes              | Yes                     |
+# | mTLS to backends     | Depends on CNI   | Automatic via mesh      |
+# | Traffic splitting    | Limited          | Full (weight, header)   |
+# | Circuit breaking     | No               | Yes (via DestinationRule)|
+# | Fault injection      | No               | Yes                     |
+# | Rate limiting        | Annotation-based | Policy-based            |
+# | Authorization        | No               | Yes (AuthorizationPolicy)|
+# | Observability        | Limited          | Full (traces, metrics)  |
+#
+# REGULATORY ALIGNMENT:
+#   - PCI-DSS 1.2: "Build and maintain a secure network" (controlled ingress)
+#   - PCI-DSS 4.1: "Use strong cryptography" (TLS at the edge)
+#   - SOC 2 CC6.6: "Boundary protection mechanisms" (gateway as boundary)
+#   - DORA Art.9: "Protection and prevention" (TLS, access control)
+#
+# =============================================================================
+
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: compliant-app-gateway
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+    compliance.regulated/pci-dss: "req-4.1"
+spec:
+  # ---------------------------------------------------------------------------
+  # Gateway Selector
+  # ---------------------------------------------------------------------------
+  # Binds this Gateway configuration to the Istio ingress gateway pods.
+  # The selector matches the labels on the ingress gateway Deployment
+  # installed by the istio/gateway Helm chart.
+  # ---------------------------------------------------------------------------
+  selector:
+    istio: ingressgateway
+
+  servers:
+    # -------------------------------------------------------------------------
+    # HTTPS Server (Production)
+    # -------------------------------------------------------------------------
+    # For production regulated environments, always use TLS.
+    # The certificate should be provisioned by cert-manager or loaded from
+    # a Kubernetes Secret created by your PKI process.
+    #
+    # TLS MODES:
+    # | Mode            | Client Cert | Server Cert | Use Case           |
+    # |-----------------|-------------|-------------|--------------------|
+    # | PASSTHROUGH     | No          | No (proxy)  | End-to-end TLS     |
+    # | SIMPLE          | No          | Yes         | Standard HTTPS     |
+    # | MUTUAL          | Yes         | Yes         | Client cert auth   |
+    # | AUTO_PASSTHROUGH| No          | No          | SNI-based routing  |
+    # | ISTIO_MUTUAL    | Yes (auto)  | Yes (auto)  | Mesh-internal      |
+    #
+    # For regulated environments, MUTUAL (mTLS at the edge) provides the
+    # strongest authentication -- clients must present a valid certificate.
+    # SIMPLE TLS is acceptable when client authentication is handled at
+    # the application layer (e.g., OAuth2, OIDC).
+    # -------------------------------------------------------------------------
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        # Reference a Kubernetes Secret containing the TLS certificate.
+        # Create the secret with:
+        #   kubectl create secret tls compliant-app-tls \
+        #     --cert=path/to/cert.pem \
+        #     --key=path/to/key.pem \
+        #     -n istio-system
+        #
+        # For production, use cert-manager to automate certificate lifecycle:
+        #   apiVersion: cert-manager.io/v1
+        #   kind: Certificate
+        #   metadata:
+        #     name: compliant-app-tls
+        #     namespace: istio-system
+        #   spec:
+        #     secretName: compliant-app-tls
+        #     issuerRef:
+        #       name: letsencrypt-prod
+        #       kind: ClusterIssuer
+        credentialName: compliant-app-tls
+      hosts:
+        # Hostname matching for this server.
+        # Only requests with this Host header will be routed.
+        - "compliant-app.example.com"
+
+    # -------------------------------------------------------------------------
+    # HTTP Server (Redirect to HTTPS)
+    # -------------------------------------------------------------------------
+    # Accept HTTP on port 80 only to redirect to HTTPS.
+    # In regulated environments, never serve application traffic over plain HTTP.
+    #
+    # REGULATORY CONTEXT (PCI-DSS 4.1):
+    # "Sensitive data must not be transmitted over unencrypted channels."
+    # The redirect ensures all clients upgrade to TLS.
+    # -------------------------------------------------------------------------
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      tls:
+        httpsRedirect: true
+      hosts:
+        - "compliant-app.example.com"
+
+---
+# =============================================================================
+# VIRTUAL SERVICE - ROUTING RULES
+# =============================================================================
+#
+# WHAT IS A VIRTUAL SERVICE?
+# A VirtualService defines routing rules for traffic arriving at a Gateway
+# or originating from within the mesh. It controls how requests are routed
+# to destination services.
+#
+# CAPABILITIES:
+#   - Route by URI path, HTTP headers, query parameters
+#   - Traffic splitting (canary deployments, A/B testing)
+#   - Fault injection (testing resilience)
+#   - Retries and timeouts
+#   - URL rewriting and header manipulation
+#
+# =============================================================================
+
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: compliant-app
+  namespace: compliant-app
+  labels:
+    app.kubernetes.io/part-of: istio-mesh
+spec:
+  # ---------------------------------------------------------------------------
+  # Hostnames this VirtualService applies to.
+  # Must match a host in the Gateway definition above.
+  # ---------------------------------------------------------------------------
+  hosts:
+    - "compliant-app.example.com"
+
+  # ---------------------------------------------------------------------------
+  # Bind to the Gateway defined above.
+  # Without this, the VirtualService would only apply to mesh-internal traffic.
+  # ---------------------------------------------------------------------------
+  gateways:
+    - compliant-app-gateway
+
+  http:
+    - match:
+        - uri:
+            # -----------------------------------------------------------------
+            # Route all paths starting with / to the compliant app.
+            # For more granular routing, use exact or regex matching:
+            #   exact: "/api/v1/health"
+            #   regex: "/api/v[0-9]+/.*"
+            # -----------------------------------------------------------------
+            prefix: /
+
+      route:
+        - destination:
+            host: compliant-app.compliant-app.svc.cluster.local
+            port:
+              number: 80
+            # -----------------------------------------------------------------
+            # Subset reference (optional).
+            # When using DestinationRule subsets for canary or blue/green:
+            #   subset: stable
+            # See destination-rule.yaml for subset definitions.
+            # -----------------------------------------------------------------
+
+      # -----------------------------------------------------------------------
+      # Timeout
+      # -----------------------------------------------------------------------
+      # Maximum time to wait for a response from the upstream service.
+      # Prevents slow backends from consuming gateway resources.
+      #
+      # REGULATORY CONTEXT (DORA Art.11):
+      # "Establish and maintain appropriate performance and capacity targets"
+      # Timeouts prevent cascade failures and maintain system responsiveness.
+      # -----------------------------------------------------------------------
+      timeout: 30s
+
+      # -----------------------------------------------------------------------
+      # Retry Policy
+      # -----------------------------------------------------------------------
+      # Automatically retry failed requests to improve reliability.
+      # Retries are transparent to the client.
+      #
+      # CAUTION: Only retry idempotent operations (GET). Retrying POST/PUT
+      # can cause duplicate side effects.
+      # -----------------------------------------------------------------------
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: 5xx,reset,connect-failure,retriable-4xx

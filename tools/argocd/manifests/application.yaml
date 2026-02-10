@@ -1,0 +1,262 @@
+# ABOUTME: Sample Argo CD Application CRD pointing to the compliant-app workload.
+# ABOUTME: Educational reference with heavy comments explaining each field.
+# =============================================================================
+# ARGO CD APPLICATION - COMPLIANT APP
+# =============================================================================
+#
+# PURPOSE:
+# This Application CRD tells Argo CD to deploy the compliant-app workload
+# from this repository. Argo CD will monitor the Git repository and keep
+# the cluster state synchronized with the manifests in the specified path.
+#
+# HOW IT WORKS:
+# 1. Argo CD reads this Application CRD
+# 2. Clones the Git repository at the specified revision
+# 3. Reads all YAML manifests in the specified path
+# 4. Compares those manifests against the live cluster state
+# 5. Reports the sync status (Synced / OutOfSync)
+# 6. Optionally auto-syncs to apply changes
+#
+# LIFECYCLE:
+#   kubectl apply -f application.yaml
+#     -> Argo CD detects the new Application
+#     -> Clones the repo and reads manifests
+#     -> Reports "OutOfSync" (resources don't exist yet)
+#     -> User clicks "Sync" in UI (or auto-sync triggers)
+#     -> Argo CD applies manifests to the cluster
+#     -> Reports "Synced" and "Healthy"
+#
+# REGULATORY CONTEXT:
+# This CRD is the link between Git (approved state) and the cluster
+# (live state). Every deployment is traceable to a Git commit.
+#
+#   DORA Article 9:  "ICT change management procedures"
+#   PCI-DSS Req 6.5: "Change control procedures"
+#   SOC 2 CC8.1:     "Changes are authorized and documented"
+#
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # ---------------------------------------------------------------------------
+  # Application Name
+  # ---------------------------------------------------------------------------
+  # The name of the Application in Argo CD. This is how it appears in the
+  # UI and CLI. Use descriptive names that include the workload and
+  # environment (e.g., "compliant-app-staging", "compliant-app-prod").
+  # ---------------------------------------------------------------------------
+  name: compliant-app
+  # ---------------------------------------------------------------------------
+  # Namespace
+  # ---------------------------------------------------------------------------
+  # Applications must be created in the Argo CD namespace (where Argo CD
+  # is installed). This is NOT the namespace where the workload deploys --
+  # that is configured in spec.destination.namespace below.
+  # ---------------------------------------------------------------------------
+  namespace: argocd
+  # ---------------------------------------------------------------------------
+  # Labels
+  # ---------------------------------------------------------------------------
+  # Labels help organize and filter Applications in the UI and CLI.
+  # Use consistent labeling for environment, team, and compliance tier.
+  # ---------------------------------------------------------------------------
+  labels:
+    app.kubernetes.io/part-of: regulated-demo
+    environment: demo
+    security-posture: compliant
+  # ---------------------------------------------------------------------------
+  # Finalizers
+  # ---------------------------------------------------------------------------
+  # The resources-finalizer ensures that when this Application CRD is
+  # deleted, Argo CD also deletes the deployed Kubernetes resources.
+  #
+  # WITHOUT finalizer: Deleting the Application leaves workloads running.
+  # WITH finalizer: Deleting the Application cleans up all managed resources.
+  #
+  # CAUTION: In production, consider whether you want cascade deletion.
+  # For regulated environments, you may prefer to keep resources running
+  # and decommission them through a separate change management process.
+  # ---------------------------------------------------------------------------
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # ---------------------------------------------------------------------------
+  # Project
+  # ---------------------------------------------------------------------------
+  # The Argo CD project this Application belongs to. Projects define
+  # source and destination restrictions, RBAC roles, and resource quotas.
+  #
+  # "default" is the built-in project with no restrictions.
+  # In production, use a dedicated project (see project.yaml) to enforce
+  # least-privilege access controls.
+  #
+  # REGULATORY CONTEXT (SOC 2 CC6.1):
+  # "Logical access controls restrict access based on job function"
+  # Projects enforce which repos and namespaces an Application can use.
+  # ---------------------------------------------------------------------------
+  project: regulated-apps
+
+  # ===========================================================================
+  # SOURCE
+  # ===========================================================================
+  # Defines where Argo CD fetches the desired Kubernetes manifests.
+  # Supports Git repositories, Helm chart repositories, and OCI registries.
+  # ===========================================================================
+  source:
+    # -------------------------------------------------------------------------
+    # Repository URL
+    # -------------------------------------------------------------------------
+    # The Git repository containing the Kubernetes manifests.
+    # Can be HTTPS or SSH. For private repos, configure credentials
+    # in Argo CD settings (see values.yaml configs.repositories).
+    # -------------------------------------------------------------------------
+    repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+
+    # -------------------------------------------------------------------------
+    # Target Revision
+    # -------------------------------------------------------------------------
+    # The Git branch, tag, or commit SHA to deploy from.
+    #
+    # OPTIONS:
+    #   HEAD:         Latest commit on the default branch (tracks changes)
+    #   main:         Latest commit on a specific branch
+    #   v1.0.0:       A specific Git tag (recommended for production)
+    #   abc123def:    A specific commit SHA (most precise)
+    #
+    # PRODUCTION RECOMMENDATION:
+    # Use Git tags for production deployments. Tags are immutable and
+    # provide a clear mapping between releases and deployed versions.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 6.5.3):
+    # "Separation of development, testing, and production environments"
+    # Use different targetRevisions per environment:
+    #   dev:  HEAD (latest changes)
+    #   staging: release candidate branch or tag
+    #   prod: release tag (e.g., v1.2.3)
+    # -------------------------------------------------------------------------
+    targetRevision: HEAD
+
+    # -------------------------------------------------------------------------
+    # Path
+    # -------------------------------------------------------------------------
+    # The directory within the repository containing Kubernetes manifests.
+    # Argo CD will recursively read all YAML/JSON files in this path.
+    #
+    # For Helm charts, this would be the chart directory.
+    # For Kustomize, this would be the directory containing kustomization.yaml.
+    # For plain YAML, all files in the directory are applied.
+    # -------------------------------------------------------------------------
+    path: workloads/compliant-app
+
+  # ===========================================================================
+  # DESTINATION
+  # ===========================================================================
+  # Defines where Argo CD deploys the Kubernetes resources.
+  # ===========================================================================
+  destination:
+    # -------------------------------------------------------------------------
+    # Cluster URL
+    # -------------------------------------------------------------------------
+    # The Kubernetes API server URL to deploy to.
+    #
+    # https://kubernetes.default.svc is the in-cluster API server
+    # (the cluster where Argo CD is running). For multi-cluster
+    # deployments, register external clusters via:
+    #   argocd cluster add <context-name>
+    # -------------------------------------------------------------------------
+    server: https://kubernetes.default.svc
+
+    # -------------------------------------------------------------------------
+    # Namespace
+    # -------------------------------------------------------------------------
+    # The target namespace for resources that don't specify their own namespace.
+    # Resources with an explicit namespace in their manifest will use that
+    # namespace instead (e.g., the Namespace resource itself).
+    # -------------------------------------------------------------------------
+    namespace: compliant-app
+
+  # ===========================================================================
+  # SYNC POLICY
+  # ===========================================================================
+  # Controls how and when Argo CD synchronizes the cluster to match Git.
+  # This is where GitOps enforcement policies are configured.
+  # ===========================================================================
+  syncPolicy:
+    # -------------------------------------------------------------------------
+    # Automated Sync
+    # -------------------------------------------------------------------------
+    # When enabled, Argo CD automatically syncs when it detects drift
+    # between the Git state and the live cluster state.
+    #
+    # PRUNE:
+    # When true, resources that exist in the cluster but are deleted from
+    # Git will be removed from the cluster. This enforces Git as the
+    # complete source of truth.
+    #
+    # CAUTION: Prune can delete resources if manifests are accidentally
+    # removed from Git. Use with PR review workflows as a safety net.
+    #
+    # SELF-HEAL:
+    # When true, Argo CD reverts any manual changes made directly to
+    # the cluster (e.g., via kubectl edit). This prevents configuration
+    # drift and ensures Git remains the authority.
+    #
+    # REGULATORY CONTEXT (DORA Article 9):
+    # "Prevent unauthorized changes to ICT systems"
+    # Self-heal ensures no one can bypass the Git-based change process.
+    #
+    # MANUAL vs AUTOMATED:
+    # Regulated environments often prefer manual sync with approval gates
+    # (PR review required before Argo CD applies changes). Auto-sync is
+    # acceptable when combined with mandatory PR reviews in Git.
+    # -------------------------------------------------------------------------
+    automated:
+      prune: true
+      selfHeal: true
+
+    # -------------------------------------------------------------------------
+    # Sync Options
+    # -------------------------------------------------------------------------
+    # Fine-grained controls for sync behavior.
+    # -------------------------------------------------------------------------
+    syncOptions:
+      # -----------------------------------------------------------------------
+      # CreateNamespace
+      # -----------------------------------------------------------------------
+      # Automatically create the destination namespace if it doesn't exist.
+      # Convenient for initial setup, but in production you may prefer to
+      # manage namespaces separately (with labels, quotas, policies).
+      # -----------------------------------------------------------------------
+      - CreateNamespace=true
+
+      # -----------------------------------------------------------------------
+      # PruneLast
+      # -----------------------------------------------------------------------
+      # Prune (delete) resources only after all other sync operations
+      # complete. This prevents deleting resources before their replacements
+      # are ready, reducing downtime risk.
+      # -----------------------------------------------------------------------
+      - PruneLast=true
+
+      # -----------------------------------------------------------------------
+      # ApplyOutOfSyncOnly
+      # -----------------------------------------------------------------------
+      # Only apply resources that are actually out of sync, rather than
+      # re-applying all resources every sync. Reduces API server load
+      # and avoids unnecessary resource updates.
+      # -----------------------------------------------------------------------
+      - ApplyOutOfSyncOnly=true
+
+    # -------------------------------------------------------------------------
+    # Retry Policy
+    # -------------------------------------------------------------------------
+    # Automatically retry failed syncs with exponential backoff.
+    # Handles transient errors (API server overload, network issues).
+    # -------------------------------------------------------------------------
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
