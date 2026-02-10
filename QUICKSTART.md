@@ -88,7 +88,7 @@ kubectl get nodes
 ## Step 2: Install Security Tools (5 minutes)
 
 ```bash
-./scripts/install-security-tools.sh
+./scripts/install-tools.sh
 
 # Verify installations
 kubectl get pods -n falco          # Falco + Talon
@@ -101,12 +101,12 @@ kubectl get pods -n kubescape      # Kubescape Operator
 
 ```bash
 # Deploy the vulnerable application (demonstrates policy violations)
-kubectl apply -f demo-workloads/vulnerable-app/namespace.yaml
-kubectl apply -f demo-workloads/vulnerable-app/
+kubectl apply -f workloads/vulnerable-app/namespace.yaml
+kubectl apply -f workloads/vulnerable-app/
 
 # Deploy the compliant application (passes all policies)
-kubectl apply -f demo-workloads/compliant-app/namespace.yaml
-kubectl apply -f demo-workloads/compliant-app/
+kubectl apply -f workloads/compliant-app/namespace.yaml
+kubectl apply -f workloads/compliant-app/
 ```
 
 ## Step 4: Run the Demo
@@ -120,7 +120,7 @@ kubectl apply -f demo-workloads/compliant-app/
 
 **Attack Simulation (SEE phase)**
 ```bash
-cd attack-simulation
+cd scenarios/attack-detect-prevent
 ./01-reconnaissance.sh
 ./02-credential-theft.sh
 ./03-lateral-movement.sh
@@ -134,10 +134,10 @@ kubectl logs -n falco -l app.kubernetes.io/name=falco -f
 **Test Kyverno Policies (PREVENT phase)**
 ```bash
 # Apply policies
-kubectl apply -f security-tools/kyverno/policies/
+kubectl apply -f tools/kyverno/policies/
 
 # Try to deploy vulnerable app (should be rejected!)
-kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
+kubectl apply -f workloads/vulnerable-app/deployment.yaml
 # Error: Privileged containers are not allowed...
 ```
 
@@ -166,7 +166,7 @@ kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
 
 ### 1. KubeHound Attack Paths
 ```bash
-cd security-tools/kubehound
+cd tools/kubehound
 docker compose up -d
 docker compose exec kubehound kubehound
 # Open http://localhost:8183 for graph visualization

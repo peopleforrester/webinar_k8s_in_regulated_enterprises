@@ -137,7 +137,7 @@ echo ""
 POD=$(kubectl get pod -n "${NAMESPACE}" -l "${APP_LABEL}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [[ -z "${POD}" ]]; then
     echo -e "${RED}ERROR: No vulnerable-app pod found in namespace ${NAMESPACE}${NC}"
-    echo "Deploy the vulnerable app first: kubectl apply -f ../demo-workloads/vulnerable-app/"
+    echo "Deploy the vulnerable app first: kubectl apply -f ../../workloads/vulnerable-app/"
     exit 1
 fi
 

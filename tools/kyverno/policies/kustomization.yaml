@@ -85,13 +85,13 @@
 # BASIC DEPLOYMENT:
 # -----------------
 # Deploy all policies to cluster:
-#   $ kubectl apply -k security-tools/kyverno/policies/
+#   $ kubectl apply -k tools/kyverno/policies/
 #
 # Preview what will be deployed:
-#   $ kustomize build security-tools/kyverno/policies/
+#   $ kustomize build tools/kyverno/policies/
 #
 # Remove all policies:
-#   $ kubectl delete -k security-tools/kyverno/policies/
+#   $ kubectl delete -k tools/kyverno/policies/
 #
 # VERIFY DEPLOYMENT:
 # ------------------

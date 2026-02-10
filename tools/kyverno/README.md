@@ -33,7 +33,7 @@ kubectl apply -k policies/
 
 ```bash
 # Test with Kyverno CLI
-kyverno apply policies/ --resource ../demo-workloads/vulnerable-app/deployment.yaml
+kyverno apply policies/ --resource ../../workloads/vulnerable-app/deployment.yaml
 
 # Check policy reports
 kubectl get polr -A

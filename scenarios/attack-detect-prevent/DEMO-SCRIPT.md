@@ -69,7 +69,7 @@ kubectl get clusterrole vulnerable-app-role -o yaml
 ### KubeHound attack paths (if running)
 
 ```bash
-cd security-tools/kubehound
+cd tools/kubehound
 docker compose exec kubehound kubehound query --file /queries/attack-paths.cypher
 ```
 
@@ -94,7 +94,7 @@ kubectl logs -n falco -l app.kubernetes.io/name=falco -f --since=1m
 
 ```bash
 # In terminal 1
-./attack-simulation/01-reconnaissance.sh
+./scenarios/attack-detect-prevent/01-reconnaissance.sh
 ```
 
 **Talking point:** "Falco detected the service account token read. Every alert includes MITRE ATT&CK technique IDs."
@@ -102,7 +102,7 @@ kubectl logs -n falco -l app.kubernetes.io/name=falco -f --since=1m
 ### Run credential theft
 
 ```bash
-./attack-simulation/02-credential-theft.sh
+./scenarios/attack-detect-prevent/02-credential-theft.sh
 ```
 
 **Talking point:** "This is a CRITICAL alert - the container is querying the Kubernetes secrets API. In a financial services environment, this could mean access to database credentials, API keys, or customer data."
@@ -110,7 +110,7 @@ kubectl logs -n falco -l app.kubernetes.io/name=falco -f --since=1m
 ### Run lateral movement
 
 ```bash
-./attack-simulation/03-lateral-movement.sh
+./scenarios/attack-detect-prevent/03-lateral-movement.sh
 ```
 
 **Talking point:** "Falco caught the privilege escalation attempt and the suspicious outbound connection. These alerts flow through Falcosidekick to your SIEM, Slack, or PagerDuty."
@@ -126,7 +126,7 @@ kubectl logs -n falco -l app.kubernetes.io/name=falco -f --since=1m
 ### Apply Kyverno policies
 
 ```bash
-kubectl apply -k security-tools/kyverno/policies/
+kubectl apply -k tools/kyverno/policies/
 kubectl get clusterpolicies
 ```
 
@@ -146,7 +146,7 @@ kubectl get clusterpolicy disallow-privileged-containers -o yaml | head -20
 
 ```bash
 kubectl delete deployment vulnerable-app -n vulnerable-app
-kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
+kubectl apply -f workloads/vulnerable-app/deployment.yaml
 ```
 
 **Expected output:** ERROR - blocked by Kyverno with clear message about which policies failed
@@ -156,8 +156,8 @@ kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml
 ### Deploy the compliant app
 
 ```bash
-kubectl apply -f demo-workloads/compliant-app/namespace.yaml
-kubectl apply -f demo-workloads/compliant-app/
+kubectl apply -f workloads/compliant-app/namespace.yaml
+kubectl apply -f workloads/compliant-app/
 kubectl get pods -n compliant-app
 ```
 

@@ -50,11 +50,11 @@ cd aks-for-regulated-enterprises
 ./scripts/setup-cluster.sh
 
 # Install security tools (~5 min)
-./scripts/install-security-tools.sh
+./scripts/install-tools.sh
 
 # Deploy demo workloads
-kubectl apply -f demo-workloads/vulnerable-app/
-kubectl apply -f demo-workloads/compliant-app/
+kubectl apply -f workloads/vulnerable-app/
+kubectl apply -f workloads/compliant-app/
 
 # Run the demo
 ./scripts/run-demo.sh
@@ -79,7 +79,7 @@ See [docs/COMPLIANCE-MAPPING.md](docs/COMPLIANCE-MAPPING.md) for detailed contro
 ```
 ├── infrastructure/          # Terraform for AKS (K8s 1.34, Cilium, AzureLinux)
 │   └── terraform/
-├── security-tools/          # Helm values and configurations
+├── tools/                   # Helm values and configurations
 │   ├── falco/              # Runtime detection (0.43.0, modern_ebpf)
 │   ├── falco-talon/        # Automated response (0.3.0)
 │   ├── falcosidekick/      # Alert routing
@@ -87,10 +87,11 @@ See [docs/COMPLIANCE-MAPPING.md](docs/COMPLIANCE-MAPPING.md) for detailed contro
 │   ├── kubescape/          # Compliance scanning (4.0.0, CIS-v1.12.0)
 │   ├── trivy/              # Vulnerability scanning (0.29.0)
 │   └── kubehound/          # Attack path analysis (1.6.7)
-├── demo-workloads/          # Vulnerable and compliant example apps
+├── workloads/               # Vulnerable and compliant example apps
 │   ├── vulnerable-app/     # Intentionally insecure for demo
 │   └── compliant-app/      # Passes all Kyverno policies
-├── attack-simulation/       # Scripts to demonstrate attacks (MITRE ATT&CK)
+├── scenarios/               # Demo scenarios (attack-detect-prevent)
+│   └── attack-detect-prevent/  # Scripts and docs for MITRE ATT&CK demo
 ├── ci-cd/                   # Pipeline templates (Azure DevOps, GitHub Actions)
 ├── scripts/                 # Automation scripts
 └── docs/                    # Documentation and compliance mappings

@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Kubernetes dry-run validation
-        run: kubectl apply --dry-run=client -f demo-workloads/compliant-app/
+        run: kubectl apply --dry-run=client -f workloads/compliant-app/
 
   deploy:
     needs: validate
@@ -45,8 +45,8 @@ jobs:
 
       - name: Deploy application
         run: |
-          kubectl apply -f demo-workloads/compliant-app/namespace.yaml
-          kubectl apply -f demo-workloads/compliant-app/
+          kubectl apply -f workloads/compliant-app/namespace.yaml
+          kubectl apply -f workloads/compliant-app/
 
       - name: Verify rollout
         run: |

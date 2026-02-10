@@ -56,7 +56,7 @@ stages:
               kubescape scan framework nsa \
                 --include-namespaces vulnerable-app,compliant-app \
                 --format junit --output kubescape-results.xml \
-                demo-workloads/
+                workloads/
             displayName: "Run Kubescape scan"
 
           - task: PublishTestResults@2

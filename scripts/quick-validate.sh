@@ -92,7 +92,7 @@ if kubectl get namespace demo &>/dev/null; then
     success "Demo namespace exists with $DEMO_PODS pods"
     kubectl get pods -n demo --no-headers 2>/dev/null | awk '{print "   - " $1 " (" $3 ")"}'
 else
-    warn "Demo namespace not found. Deploy with: kubectl apply -f demo-workloads/compliant-app/"
+    warn "Demo namespace not found. Deploy with: kubectl apply -f workloads/compliant-app/"
 fi
 
 #######################################
@@ -130,7 +130,7 @@ if [ $ISSUES -eq 0 ]; then
     echo -e "${GREEN}All core security tools are operational!${NC}"
     echo ""
     echo "Ready for demo. Suggested next steps:"
-    echo "  1. Run attack simulation:  ./attack-simulation/run-attack.sh"
+    echo "  1. Run attack simulation:  ./scenarios/attack-detect-prevent/01-reconnaissance.sh"
     echo "  2. Watch Falco logs:       kubectl logs -n falco -l app.kubernetes.io/name=falco -f"
     echo "  3. Run compliance scan:    kubescape scan framework cis-v1.12.0"
 else

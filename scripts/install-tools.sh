@@ -44,7 +44,7 @@
 #   - Cluster should have at least 4GB memory available
 #
 # USAGE:
-#   ./install-security-tools.sh
+#   ./install-tools.sh
 #
 # WHAT HAPPENS:
 #   - Helm repositories are added for each tool
@@ -75,7 +75,7 @@ set -euo pipefail
 # PATH CONFIGURATION
 # ----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SECURITY_TOOLS_DIR="${SCRIPT_DIR}/../security-tools"
+TOOLS_DIR="${SCRIPT_DIR}/../tools"
 
 # Terminal colors for readable output
 BOLD='\033[1m'
@@ -194,7 +194,7 @@ kubectl cluster-info >/dev/null 2>&1 || { echo -e "${RED}Cannot connect to clust
 #
 # WHY HELM?
 #   Helm provides standardized installation, configuration, and upgrades.
-#   Each tool's values.yaml in security-tools/ customizes the deployment
+#   Each tool's values.yaml in tools/ customizes the deployment
 #   for this specific demo environment.
 # ============================================================================
 progress "Adding Helm repositories..."
@@ -255,7 +255,7 @@ progress "Installing Falco (runtime threat detection)..."
 helm upgrade --install falco falcosecurity/falco \
     --namespace falco \
     --create-namespace \
-    -f "${SECURITY_TOOLS_DIR}/falco/values.yaml" \
+    -f "${TOOLS_DIR}/falco/values.yaml" \
     --wait --timeout 5m
 verify_install "falco" "Falco" || true
 echo ""
@@ -287,7 +287,7 @@ echo ""
 progress "Installing Falcosidekick (alert forwarding)..."
 helm upgrade --install falcosidekick falcosecurity/falcosidekick \
     --namespace falco \
-    -f "${SECURITY_TOOLS_DIR}/falcosidekick/values.yaml" \
+    -f "${TOOLS_DIR}/falcosidekick/values.yaml" \
     --wait --timeout 3m
 verify_install "falco" "Falcosidekick" || true
 echo ""
@@ -326,7 +326,7 @@ progress "Installing Kyverno (policy engine)..."
 helm upgrade --install kyverno kyverno/kyverno \
     --namespace kyverno \
     --create-namespace \
-    -f "${SECURITY_TOOLS_DIR}/kyverno/values.yaml" \
+    -f "${TOOLS_DIR}/kyverno/values.yaml" \
     --wait --timeout 5m
 verify_install "kyverno" "Kyverno" || true
 echo ""
@@ -362,7 +362,7 @@ progress "Installing Trivy Operator (vulnerability scanning)..."
 helm upgrade --install trivy-operator aqua/trivy-operator \
     --namespace trivy-system \
     --create-namespace \
-    -f "${SECURITY_TOOLS_DIR}/trivy/values.yaml" \
+    -f "${TOOLS_DIR}/trivy/values.yaml" \
     --wait --timeout 5m
 verify_install "trivy-system" "Trivy Operator" || true
 echo ""
@@ -401,7 +401,7 @@ progress "Installing Kubescape (compliance scanning)..."
 helm upgrade --install kubescape kubescape/kubescape-operator \
     --namespace kubescape \
     --create-namespace \
-    -f "${SECURITY_TOOLS_DIR}/kubescape/values.yaml" \
+    -f "${TOOLS_DIR}/kubescape/values.yaml" \
     --wait --timeout 5m
 verify_install "kubescape" "Kubescape" || true
 echo ""

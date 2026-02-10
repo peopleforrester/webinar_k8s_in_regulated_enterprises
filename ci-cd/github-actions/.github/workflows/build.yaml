@@ -5,7 +5,7 @@ on:
   push:
     branches: [main, staging]
     paths:
-      - "demo-workloads/**"
+      - "workloads/**"
   pull_request:
     branches: [main]
 
@@ -28,8 +28,8 @@ jobs:
       - name: Build image
         run: |
           docker build -t ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            -f demo-workloads/compliant-app/Dockerfile \
-            demo-workloads/compliant-app/
+            -f workloads/compliant-app/Dockerfile \
+            workloads/compliant-app/
 
       - name: Push image
         if: github.event_name == 'push'

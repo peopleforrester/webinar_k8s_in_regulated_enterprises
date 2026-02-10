@@ -1101,7 +1101,7 @@ securityContext:
 
 ```bash
 ./scripts/setup-cluster.sh  # Deploys AKS
-./scripts/install-security-tools.sh  # Installs tools
+./scripts/install-tools.sh  # Installs tools
 ```
 
 ---

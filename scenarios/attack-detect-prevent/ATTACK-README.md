@@ -5,7 +5,7 @@ They are designed to trigger Falco alerts and demonstrate runtime detection.
 
 ## Prerequisites
 
-- Vulnerable app deployed: `kubectl apply -f ../demo-workloads/vulnerable-app/`
+- Vulnerable app deployed: `kubectl apply -f ../../workloads/vulnerable-app/`
 - Falco running: `kubectl get pods -n falco`
 
 ## Scripts

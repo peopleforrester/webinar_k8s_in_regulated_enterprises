@@ -8,7 +8,7 @@ set -euo pipefail
 # Configuration
 #######################################
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG_FILE="$REPO_ROOT/demo-test-$(date +%Y%m%d-%H%M%S).log"
 
 # Colors for output
@@ -199,7 +199,7 @@ install_security_tools() {
     helm upgrade --install kyverno kyverno/kyverno \
         --namespace kyverno --create-namespace \
         --version 3.7.0 \
-        -f "$REPO_ROOT/security-tools/kyverno/values.yaml" \
+        -f "$REPO_ROOT/tools/kyverno/values.yaml" \
         --wait --timeout 5m
     success "Kyverno installed"
 
@@ -207,7 +207,7 @@ install_security_tools() {
 
     # Apply Kyverno policies
     info "Applying Kyverno policies..."
-    kubectl apply -k "$REPO_ROOT/security-tools/kyverno/policies/"
+    kubectl apply -k "$REPO_ROOT/tools/kyverno/policies/"
     success "Kyverno policies applied"
 
     # Verify policies
@@ -217,7 +217,7 @@ install_security_tools() {
     info "Installing Falco 0.43.0..."
     helm upgrade --install falco falcosecurity/falco \
         --namespace falco --create-namespace \
-        -f "$REPO_ROOT/security-tools/falco/values.yaml" \
+        -f "$REPO_ROOT/tools/falco/values.yaml" \
         --wait --timeout 5m
     success "Falco installed"
 
@@ -230,7 +230,7 @@ install_security_tools() {
     info "Installing Kubescape 4.0.0..."
     helm upgrade --install kubescape kubescape/kubescape-operator \
         --namespace kubescape --create-namespace \
-        -f "$REPO_ROOT/security-tools/kubescape/values.yaml" \
+        -f "$REPO_ROOT/tools/kubescape/values.yaml" \
         --wait --timeout 5m
     success "Kubescape installed"
 
@@ -240,7 +240,7 @@ install_security_tools() {
     info "Installing Trivy Operator 0.29.0..."
     helm upgrade --install trivy-operator aqua/trivy-operator \
         --namespace trivy-system --create-namespace \
-        -f "$REPO_ROOT/security-tools/trivy/values.yaml" \
+        -f "$REPO_ROOT/tools/trivy/values.yaml" \
         --wait --timeout 5m
     success "Trivy Operator installed"
 
@@ -262,7 +262,7 @@ deploy_demo_workloads() {
 
     # Deploy compliant app (should succeed)
     info "Deploying compliant application..."
-    if kubectl apply -f "$REPO_ROOT/demo-workloads/compliant-app/"; then
+    if kubectl apply -f "$REPO_ROOT/workloads/compliant-app/"; then
         success "Compliant app deployed successfully"
     else
         error "Compliant app deployment failed (unexpected)"
@@ -273,10 +273,10 @@ deploy_demo_workloads() {
 
     # Try to deploy vulnerable app (should be blocked)
     info "Attempting to deploy vulnerable application (should be BLOCKED by Kyverno)..."
-    if kubectl apply -f "$REPO_ROOT/demo-workloads/vulnerable-app/" 2>&1 | tee -a "$LOG_FILE"; then
+    if kubectl apply -f "$REPO_ROOT/workloads/vulnerable-app/" 2>&1 | tee -a "$LOG_FILE"; then
         error "Vulnerable app was deployed - Kyverno policies may not be working!"
         warn "Cleaning up vulnerable app..."
-        kubectl delete -f "$REPO_ROOT/demo-workloads/vulnerable-app/" --ignore-not-found
+        kubectl delete -f "$REPO_ROOT/workloads/vulnerable-app/" --ignore-not-found
     else
         success "Vulnerable app BLOCKED by Kyverno policies (expected behavior)"
     fi

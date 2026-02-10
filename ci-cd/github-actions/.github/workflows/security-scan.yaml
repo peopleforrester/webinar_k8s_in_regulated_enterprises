@@ -54,7 +54,7 @@ jobs:
 
       - name: Run NSA framework scan
         run: |
-          kubescape scan framework nsa demo-workloads/ \
+          kubescape scan framework nsa workloads/ \
             --format junit --output kubescape-nsa.xml || true
 
       - name: Upload Kubescape results
@@ -77,13 +77,13 @@ jobs:
 
       - name: Validate compliant app against policies
         run: |
-          kyverno apply security-tools/kyverno/policies/ \
-            --resource demo-workloads/compliant-app/deployment.yaml
+          kyverno apply tools/kyverno/policies/ \
+            --resource workloads/compliant-app/deployment.yaml
 
       - name: Verify vulnerable app fails policies
         run: |
-          if kyverno apply security-tools/kyverno/policies/ \
-            --resource demo-workloads/vulnerable-app/deployment.yaml 2>/dev/null; then
+          if kyverno apply tools/kyverno/policies/ \
+            --resource workloads/vulnerable-app/deployment.yaml 2>/dev/null; then
             echo "ERROR: Vulnerable app should have failed policy check!"
             exit 1
           else

@@ -7,7 +7,7 @@ trigger:
       - staging
   paths:
     include:
-      - demo-workloads/**
+      - workloads/**
 
 pool:
   vmImage: "ubuntu-latest"
@@ -18,7 +18,7 @@ variables:
   - name: imageRepository
     value: "demo-app"
   - name: dockerfilePath
-    value: "demo-workloads/compliant-app/Dockerfile"
+    value: "workloads/compliant-app/Dockerfile"
 
 stages:
   - stage: Build

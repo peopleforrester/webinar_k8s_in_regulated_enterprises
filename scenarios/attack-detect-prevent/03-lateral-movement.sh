@@ -410,6 +410,6 @@ echo ""
 # the Attack -> Detect -> Prevent narrative.
 # ============================================================================
 echo -e "${BOLD}Next step:${NC} Apply Kyverno policies to prevent redeployment:"
-echo "  kubectl apply -k ../security-tools/kyverno/policies/"
-echo "  kubectl delete -f ../demo-workloads/vulnerable-app/deployment.yaml"
-echo "  kubectl apply -f ../demo-workloads/vulnerable-app/deployment.yaml  # Should be REJECTED"
+echo "  kubectl apply -k ../../tools/kyverno/policies/"
+echo "  kubectl delete -f ../../workloads/vulnerable-app/deployment.yaml"
+echo "  kubectl apply -f ../../workloads/vulnerable-app/deployment.yaml  # Should be REJECTED"

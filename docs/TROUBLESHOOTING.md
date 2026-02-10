@@ -147,7 +147,7 @@ If deploying before Kyverno policies and it still fails:
 kubectl get ns vulnerable-app
 
 # Check for other admission controllers blocking
-kubectl apply -f demo-workloads/vulnerable-app/deployment.yaml --dry-run=server -v=5
+kubectl apply -f workloads/vulnerable-app/deployment.yaml --dry-run=server -v=5
 ```
 
 ### Compliant app pods crash
@@ -178,7 +178,7 @@ lsof -i :8182  # JanusGraph
 lsof -i :8183  # GraphExp UI
 
 # View KubeHound logs
-docker compose -f security-tools/kubehound/docker-compose.yaml logs
+docker compose -f tools/kubehound/docker-compose.yaml logs
 ```
 
 ### KubeHound cannot access cluster

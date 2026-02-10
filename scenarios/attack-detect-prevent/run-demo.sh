@@ -21,8 +21,8 @@
 #
 # PREREQUISITES:
 #   - AKS cluster deployed (setup-cluster.sh)
-#   - Security tools installed (install-security-tools.sh)
-#   - Demo workloads available in ../demo-workloads/
+#   - Security tools installed (install-tools.sh)
+#   - Demo workloads available in ../../workloads/
 #
 # USAGE:
 #   ./run-demo.sh
@@ -54,7 +54,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${SCRIPT_DIR}/.."
+ROOT_DIR="${SCRIPT_DIR}/../.."
 
 # Terminal colors including BLUE for pause prompts
 BOLD='\033[1m'
@@ -124,10 +124,10 @@ section_header "SETUP: Deploy Vulnerable Workload"
 echo -e "${YELLOW}Deploying the intentionally insecure application...${NC}"
 
 # Create namespace first (ignore if exists)
-kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/namespace.yaml" 2>/dev/null || true
+kubectl apply -f "${ROOT_DIR}/workloads/vulnerable-app/namespace.yaml" 2>/dev/null || true
 
 # Deploy all resources in the vulnerable-app directory
-kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/"
+kubectl apply -f "${ROOT_DIR}/workloads/vulnerable-app/"
 echo ""
 echo -e "${GREEN}Vulnerable app deployed. Waiting for pod to be ready...${NC}"
 
@@ -174,11 +174,11 @@ echo "  - An attacker in this pod can read secrets across namespaces"
 echo "  - KubeHound visualizes these attack paths in a graph database"
 echo ""
 echo -e "${YELLOW}To run KubeHound (if docker is available):${NC}"
-echo "  cd ${ROOT_DIR}/security-tools/kubehound"
+echo "  cd ${ROOT_DIR}/tools/kubehound"
 echo "  docker compose up -d"
 echo "  docker compose exec kubehound kubehound"
 echo ""
-echo "See: security-tools/kubehound/queries/ for pre-built queries"
+echo "See: tools/kubehound/queries/ for pre-built queries"
 pause
 
 # ============================================================================
@@ -216,17 +216,17 @@ pause
 
 # Run reconnaissance simulation
 echo -e "${YELLOW}Running reconnaissance simulation...${NC}"
-"${ROOT_DIR}/attack-simulation/01-reconnaissance.sh"
+"${ROOT_DIR}/scenarios/attack-detect-prevent/01-reconnaissance.sh"
 pause
 
 # Run credential theft simulation
 echo -e "${YELLOW}Running credential theft simulation...${NC}"
-"${ROOT_DIR}/attack-simulation/02-credential-theft.sh"
+"${ROOT_DIR}/scenarios/attack-detect-prevent/02-credential-theft.sh"
 pause
 
 # Run lateral movement simulation
 echo -e "${YELLOW}Running lateral movement simulation...${NC}"
-"${ROOT_DIR}/attack-simulation/03-lateral-movement.sh"
+"${ROOT_DIR}/scenarios/attack-detect-prevent/03-lateral-movement.sh"
 pause
 
 echo -e "${YELLOW}Key talking points:${NC}"
@@ -270,7 +270,7 @@ pause
 section_header "PART 3: PREVENT - Kyverno Policy Enforcement (8 min)"
 
 echo -e "${YELLOW}Applying Kyverno policies...${NC}"
-kubectl apply -k "${ROOT_DIR}/security-tools/kyverno/policies/"
+kubectl apply -k "${ROOT_DIR}/tools/kyverno/policies/"
 echo ""
 echo -e "${GREEN}6 policies applied (4 Enforce, 2 Audit)${NC}"
 echo ""
@@ -288,7 +288,7 @@ kubectl delete deployment vulnerable-app -n vulnerable-app 2>/dev/null || true
 sleep 2
 
 # Try to recreate - this should fail due to Kyverno policies
-if kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/deployment.yaml" 2>&1; then
+if kubectl apply -f "${ROOT_DIR}/workloads/vulnerable-app/deployment.yaml" 2>&1; then
     echo -e "${RED}  Unexpected: deployment was accepted${NC}"
 else
     echo ""
@@ -298,8 +298,8 @@ pause
 
 # Now show the compliant app works
 echo -e "${YELLOW}Deploying compliant application (should SUCCEED)...${NC}"
-kubectl apply -f "${ROOT_DIR}/demo-workloads/compliant-app/namespace.yaml" 2>/dev/null || true
-kubectl apply -f "${ROOT_DIR}/demo-workloads/compliant-app/"
+kubectl apply -f "${ROOT_DIR}/workloads/compliant-app/namespace.yaml" 2>/dev/null || true
+kubectl apply -f "${ROOT_DIR}/workloads/compliant-app/"
 echo ""
 echo -e "${GREEN}  Compliant app deployed successfully!${NC}"
 echo ""

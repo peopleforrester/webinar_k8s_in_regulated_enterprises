@@ -152,10 +152,10 @@ done
 echo -e "${YELLOW}[1/4] Removing demo workloads...${NC}"
 
 # Remove vulnerable app resources
-kubectl delete -f "${ROOT_DIR}/demo-workloads/vulnerable-app/" --ignore-not-found 2>/dev/null || true
+kubectl delete -f "${ROOT_DIR}/workloads/vulnerable-app/" --ignore-not-found 2>/dev/null || true
 
 # Remove compliant app resources
-kubectl delete -f "${ROOT_DIR}/demo-workloads/compliant-app/" --ignore-not-found 2>/dev/null || true
+kubectl delete -f "${ROOT_DIR}/workloads/compliant-app/" --ignore-not-found 2>/dev/null || true
 
 # Delete namespaces (this will also delete any remaining resources)
 kubectl delete namespace vulnerable-app --ignore-not-found 2>/dev/null || true
@@ -175,7 +175,7 @@ echo ""
 # This ensures we remove exactly what was deployed.
 # ============================================================================
 echo -e "${YELLOW}[2/4] Removing Kyverno policies...${NC}"
-kubectl delete -k "${ROOT_DIR}/security-tools/kyverno/policies/" --ignore-not-found 2>/dev/null || true
+kubectl delete -k "${ROOT_DIR}/tools/kyverno/policies/" --ignore-not-found 2>/dev/null || true
 echo -e "${GREEN}  Kyverno policies removed${NC}"
 echo ""
 
@@ -292,8 +292,8 @@ fi
 if [[ "${RESET_DEMO}" == "true" ]]; then
     echo -e "${YELLOW}[5/5] Resetting for fresh demo...${NC}"
     echo -e "  Deploying vulnerable app..."
-    kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/namespace.yaml" 2>/dev/null || true
-    kubectl apply -f "${ROOT_DIR}/demo-workloads/vulnerable-app/" 2>/dev/null || true
+    kubectl apply -f "${ROOT_DIR}/workloads/vulnerable-app/namespace.yaml" 2>/dev/null || true
+    kubectl apply -f "${ROOT_DIR}/workloads/vulnerable-app/" 2>/dev/null || true
 
     # Wait for pods to be ready
     echo -e "  Waiting for vulnerable app pods..."
@@ -302,7 +302,7 @@ if [[ "${RESET_DEMO}" == "true" ]]; then
 
     echo -e "${GREEN}  Demo reset complete - vulnerable app running, no policies active${NC}"
     echo ""
-    echo -e "${BOLD}  Demo is ready! Follow docs/DEMO-SCRIPT.md${NC}"
+    echo -e "${BOLD}  Demo is ready! Follow scenarios/attack-detect-prevent/DEMO-SCRIPT.md${NC}"
 fi
 
 echo ""
