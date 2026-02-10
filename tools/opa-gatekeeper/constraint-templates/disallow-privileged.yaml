@@ -1,0 +1,188 @@
+# ABOUTME: ConstraintTemplate CRD that defines a Rego policy to disallow privileged containers.
+# ABOUTME: Creates the K8sDisallowPrivileged CRD kind for use by Constraint resources.
+#
+# =============================================================================
+# CONSTRAINT TEMPLATE: Disallow Privileged Containers
+# =============================================================================
+# This ConstraintTemplate defines the Rego policy logic for blocking
+# containers that run in privileged mode (securityContext.privileged: true).
+#
+# HOW CONSTRAINTTEMPLATES WORK:
+# 1. You apply this ConstraintTemplate to the cluster
+# 2. Gatekeeper compiles the Rego code and creates a new CRD
+#    (in this case, K8sDisallowPrivileged)
+# 3. You then create a Constraint of kind K8sDisallowPrivileged
+#    that specifies which resources to enforce against
+#
+# WHY DISALLOW PRIVILEGED CONTAINERS?
+# A privileged container has full access to the host's devices, kernel
+# capabilities, and namespaces. An attacker who gains code execution
+# in a privileged container can trivially escape to the host node.
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Least privilege enforcement
+#   - DORA Article 9(4)(c): Access control minimization
+#   - PCI-DSS Req 2.2: System hardening standards
+#   - CIS Kubernetes Benchmark 5.2.1: Minimize privileged containers
+# =============================================================================
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sdisallowprivileged
+  annotations:
+    description: >-
+      Disallows containers from running in privileged mode.
+      Privileged containers have unrestricted host access and represent
+      a critical security risk in regulated environments.
+spec:
+  # ---------------------------------------------------------------------------
+  # CRD Specification
+  # ---------------------------------------------------------------------------
+  # Defines the schema for the Constraint CRD that Gatekeeper will generate.
+  # The 'names' block determines the kind used when creating Constraints.
+  # The 'validation' block defines any parameters the Rego policy accepts.
+  # ---------------------------------------------------------------------------
+  crd:
+    spec:
+      names:
+        # This is the kind you use when creating a Constraint resource.
+        # Example: kind: K8sDisallowPrivileged
+        kind: K8sDisallowPrivileged
+      validation:
+        openAPIV3Schema:
+          type: object
+          description: Parameters for the disallow-privileged policy.
+          properties:
+            # allowedImages lets you exempt specific images from the policy.
+            # This is useful for system components that legitimately require
+            # privileged access (e.g., CNI plugins, storage drivers).
+            exemptImages:
+              type: array
+              description: >-
+                List of image name patterns to exempt from the policy.
+                Supports glob patterns (e.g., "registry.example.com/*").
+              items:
+                type: string
+  # ---------------------------------------------------------------------------
+  # Targets
+  # ---------------------------------------------------------------------------
+  # Defines which admission review targets this template applies to.
+  # "admission.k8s.gatekeeper.sh" is the standard target for Kubernetes
+  # admission control.
+  # ---------------------------------------------------------------------------
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      # -----------------------------------------------------------------------
+      # Rego Policy
+      # -----------------------------------------------------------------------
+      # The Rego code that implements the policy logic. This code is compiled
+      # by Gatekeeper's OPA engine and evaluated against every matching
+      # admission request.
+      #
+      # REGO STRUCTURE:
+      # - package: Must match the ConstraintTemplate name pattern
+      # - import: Brings in the Gatekeeper library functions
+      # - violation[]: The main rule -- each match produces a violation
+      #
+      # HOW GATEKEEPER CALLS REGO:
+      # 1. Gatekeeper receives an AdmissionReview from the API server
+      # 2. It passes the review object as `input` to the Rego engine
+      # 3. input.review.object contains the submitted resource
+      # 4. input.parameters contains the Constraint's parameters
+      # 5. Any violation[] match means the request is denied
+      # -----------------------------------------------------------------------
+      rego: |
+        package k8sdisallowprivileged
+
+        import data.lib.exempt_container.is_exempt
+
+        # violation is the entry point that Gatekeeper calls.
+        # Each rule body that evaluates to true produces a violation
+        # with the specified message.
+        #
+        # This rule checks all containers in a Pod spec:
+        # - spec.containers (regular containers)
+        # - spec.initContainers (init containers)
+        # - spec.ephemeralContainers (debug containers)
+        violation[{"msg": msg}] {
+          # Get the container from any of the container arrays.
+          # Rego iterates over all elements automatically.
+          container := input_containers[_]
+
+          # Check if the container has privileged: true in its securityContext.
+          container.securityContext.privileged == true
+
+          # Check if the container image is in the exemption list.
+          # If it is exempt, this rule will not produce a violation.
+          not is_exempt(container, input.parameters)
+
+          # Build a human-readable violation message.
+          # This message is returned to the user in the admission response
+          # and stored in audit violation records.
+          msg := sprintf(
+            "Container '%v' in %v '%v' is running in privileged mode. " +
+            "Privileged containers have unrestricted host access and are " +
+            "prohibited by security policy. Remove securityContext.privileged " +
+            "or set it to false.",
+            [container.name, input.review.kind.kind, input.review.object.metadata.name]
+          )
+        }
+
+        # input_containers collects all container types from the Pod spec.
+        # Pods can have three types of containers, and the policy must
+        # check all of them:
+        #
+        # 1. containers: Regular application containers
+        # 2. initContainers: Run before the main containers start
+        # 3. ephemeralContainers: Debug containers added at runtime
+        #
+        # Each rule below adds containers from one of these arrays
+        # to the input_containers set.
+        input_containers[container] {
+          container := input.review.object.spec.containers[_]
+        }
+        input_containers[container] {
+          container := input.review.object.spec.initContainers[_]
+        }
+        input_containers[container] {
+          container := input.review.object.spec.ephemeralContainers[_]
+        }
+
+      # -----------------------------------------------------------------------
+      # Library Templates
+      # -----------------------------------------------------------------------
+      # Gatekeeper supports shared library code that can be reused across
+      # ConstraintTemplates. The exempt_container library provides a
+      # reusable function for image-based exemptions.
+      # -----------------------------------------------------------------------
+      libs:
+        - |
+          package lib.exempt_container
+
+          # is_exempt returns true if the container's image matches any
+          # pattern in the exemptImages parameter list.
+          #
+          # This allows administrators to whitelist specific images that
+          # legitimately need privileged access (CNI plugins, storage
+          # drivers, monitoring agents, etc.).
+          is_exempt(container, parameters) {
+            exempt_images := object.get(parameters, "exemptImages", [])
+            img := container.image
+            exempt_img := exempt_images[_]
+            _matches_pattern(img, exempt_img)
+          }
+
+          # _matches_pattern performs glob-style matching.
+          # Supports * as a wildcard at the end of patterns.
+          # Examples:
+          #   "registry.example.com/*" matches "registry.example.com/app:v1"
+          #   "exact-image:v1" matches only "exact-image:v1"
+          _matches_pattern(str, pattern) {
+            contains(pattern, "*")
+            prefix := trim_suffix(pattern, "*")
+            startswith(str, prefix)
+          }
+          _matches_pattern(str, pattern) {
+            not contains(pattern, "*")
+            str == pattern
+          }

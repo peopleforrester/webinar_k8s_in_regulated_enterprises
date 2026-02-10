@@ -1,0 +1,39 @@
+# ABOUTME: Production overlay with higher replicas, larger resources, and security hardening.
+# ABOUTME: Applies prod- name prefix and a strategic merge patch for security context.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namePrefix: prod-
+
+patches:
+  # Set replica count and resource limits for production
+  - target:
+      kind: Deployment
+      name: demo-app
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: demo-app
+      spec:
+        replicas: 3
+        template:
+          spec:
+            containers:
+              - name: nginx
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 256Mi
+                  limits:
+                    cpu: 500m
+                    memory: 512Mi
+
+  # Apply security context hardening
+  - path: security-patch.yaml
+    target:
+      kind: Deployment
+      name: demo-app

@@ -1,0 +1,189 @@
+# ABOUTME: ConstraintTemplate CRD that defines a Rego policy to require CPU and memory limits on containers.
+# ABOUTME: Creates the K8sRequireResourceLimits CRD kind for use by Constraint resources.
+#
+# =============================================================================
+# CONSTRAINT TEMPLATE: Require Resource Limits
+# =============================================================================
+# This ConstraintTemplate defines Rego policy logic that enforces the presence
+# of CPU and memory resource limits on all containers. Without resource limits,
+# a single misbehaving pod can consume all node resources and starve other
+# workloads (noisy neighbor problem).
+#
+# WHY REQUIRE RESOURCE LIMITS?
+# - Prevents resource exhaustion and denial-of-service within the cluster
+# - Enables the Kubernetes scheduler to make informed placement decisions
+# - Required for Quality of Service (QoS) class Guaranteed (best eviction priority)
+# - Provides predictable capacity planning for regulated workloads
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Resilience and availability of critical systems
+#   - DORA Article 11: ICT capacity and performance management
+#   - SOC 2 CC7.1: System availability monitoring and capacity management
+#   - CIS Kubernetes Benchmark 5.4.1: Ensure resource limits are set
+# =============================================================================
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequireresourcelimits
+  annotations:
+    description: >-
+      Requires all containers to specify CPU and memory resource limits.
+      Prevents resource exhaustion and enables proper capacity management
+      in regulated environments.
+spec:
+  # ---------------------------------------------------------------------------
+  # CRD Specification
+  # ---------------------------------------------------------------------------
+  # Defines the schema for the K8sRequireResourceLimits Constraint CRD.
+  # Parameters allow administrators to specify which resource types
+  # (cpu, memory) are required.
+  # ---------------------------------------------------------------------------
+  crd:
+    spec:
+      names:
+        kind: K8sRequireResourceLimits
+      validation:
+        openAPIV3Schema:
+          type: object
+          description: Parameters for the require-resource-limits policy.
+          properties:
+            # requiredLimits specifies which resource types must have limits.
+            # Common values: ["cpu", "memory"]
+            # This makes the policy flexible -- you can require only memory
+            # limits initially and add CPU limits later.
+            requiredLimits:
+              type: array
+              description: >-
+                List of resource types that must have limits defined.
+                Valid values: "cpu", "memory".
+              items:
+                type: string
+                enum:
+                  - cpu
+                  - memory
+            # exemptImages allows specific images to bypass the policy.
+            exemptImages:
+              type: array
+              description: >-
+                List of image name patterns to exempt from the policy.
+                Supports glob patterns (e.g., "registry.example.com/*").
+              items:
+                type: string
+  # ---------------------------------------------------------------------------
+  # Targets
+  # ---------------------------------------------------------------------------
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      # -----------------------------------------------------------------------
+      # Rego Policy
+      # -----------------------------------------------------------------------
+      # Checks that every container in a Pod spec has resource limits
+      # defined for each resource type specified in the parameters.
+      #
+      # EVALUATION FLOW:
+      # 1. Iterate over all containers (regular, init, ephemeral)
+      # 2. For each required resource type (cpu, memory):
+      #    a. Check if container.resources.limits.<type> is defined
+      #    b. If missing, produce a violation with a descriptive message
+      # -----------------------------------------------------------------------
+      rego: |
+        package k8srequireresourcelimits
+
+        import data.lib.exempt_container.is_exempt
+
+        # violation checks that each container has the required resource limits.
+        # This rule fires once per missing limit per container, so a container
+        # missing both cpu and memory limits produces two violations.
+        violation[{"msg": msg}] {
+          # Get a container from any of the container arrays.
+          container := input_containers[_]
+
+          # Skip exempt containers.
+          not is_exempt(container, input.parameters)
+
+          # Get a required limit type from the parameters.
+          # Rego iterates over each element in the array.
+          required := input.parameters.requiredLimits[_]
+
+          # Check if the limit is missing.
+          # object.get safely accesses nested fields, returning a default
+          # value ({} or "") if the field does not exist.
+          not has_resource_limit(container, required)
+
+          # Build a descriptive violation message.
+          msg := sprintf(
+            "Container '%v' in %v '%v' does not have a %v limit defined. " +
+            "All containers must specify resource limits for capacity management " +
+            "and cluster stability. Add resources.limits.%v to the container spec.",
+            [
+              container.name,
+              input.review.kind.kind,
+              input.review.object.metadata.name,
+              required,
+              required,
+            ]
+          )
+        }
+
+        # has_resource_limit checks whether a container has a specific
+        # resource limit defined (cpu or memory).
+        #
+        # The check verifies that:
+        # 1. container.resources exists
+        # 2. container.resources.limits exists
+        # 3. container.resources.limits[resource_type] exists and is not empty
+        #
+        # Using object.get with defaults avoids runtime errors when
+        # intermediate fields are missing (e.g., no resources block at all).
+        has_resource_limit(container, resource_type) {
+          limits := object.get(
+            object.get(
+              object.get(container, "resources", {}),
+              "limits", {}
+            ),
+            resource_type, ""
+          )
+          limits != ""
+        }
+
+        # input_containers collects all container types from the Pod spec.
+        # Pods can have three types of containers:
+        # - containers: Regular application containers (always present)
+        # - initContainers: Run sequentially before main containers
+        # - ephemeralContainers: Debug containers added at runtime
+        input_containers[container] {
+          container := input.review.object.spec.containers[_]
+        }
+        input_containers[container] {
+          container := input.review.object.spec.initContainers[_]
+        }
+        input_containers[container] {
+          container := input.review.object.spec.ephemeralContainers[_]
+        }
+
+      # -----------------------------------------------------------------------
+      # Library Templates
+      # -----------------------------------------------------------------------
+      # Reusable exempt_container library for image-based exemptions.
+      # Same library as used by the disallow-privileged template.
+      # -----------------------------------------------------------------------
+      libs:
+        - |
+          package lib.exempt_container
+
+          is_exempt(container, parameters) {
+            exempt_images := object.get(parameters, "exemptImages", [])
+            img := container.image
+            exempt_img := exempt_images[_]
+            _matches_pattern(img, exempt_img)
+          }
+
+          _matches_pattern(str, pattern) {
+            contains(pattern, "*")
+            prefix := trim_suffix(pattern, "*")
+            startswith(str, prefix)
+          }
+          _matches_pattern(str, pattern) {
+            not contains(pattern, "*")
+            str == pattern
+          }

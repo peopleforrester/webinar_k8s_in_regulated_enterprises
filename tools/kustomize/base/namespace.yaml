@@ -1,0 +1,6 @@
+# ABOUTME: Namespace resource for the demo-app workload.
+# ABOUTME: Referenced by the base kustomization as a shared resource across all overlays.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-app

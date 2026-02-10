@@ -1,0 +1,262 @@
+# ABOUTME: PrometheusRule CRD defining security-relevant alerting rules for regulated environments.
+# ABOUTME: Covers pod restart anomalies, missing network policies, root containers, and high error rates.
+#
+# =============================================================================
+# SECURITY ALERTING RULES
+# =============================================================================
+# These PrometheusRule CRDs define alerting rules that map to security and
+# compliance monitoring requirements for regulated environments.
+#
+# HOW TO DEPLOY:
+#   kubectl apply -f security-alerts.yaml -n monitoring
+#
+# PREREQUISITES:
+# - kube-prometheus-stack installed (provides PrometheusRule CRD)
+# - kube-state-metrics running (provides kube_* metrics)
+# - Prometheus ruleSelector configured to pick up these rules
+#   (empty ruleSelector {} in values.yaml picks up all rules)
+#
+# HOW PROMETHEUS RULES WORK:
+# 1. Prometheus evaluates each rule's "expr" at every evaluation_interval (30s)
+# 2. If the expression returns results, the "for" timer starts
+# 3. If the expression remains true for the "for" duration, the alert fires
+# 4. Firing alerts are sent to Alertmanager for routing and notification
+# 5. When the expression returns empty, the alert resolves
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Monitor for anomalous activity indicative of compromise"
+#   - DORA Article 10: "Detection of anomalous activities"
+#   - SOC 2 CC7.2: "System monitoring and anomaly detection"
+#   - PCI-DSS 10.6: "Review logs and security events"
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: security-alerts
+  namespace: monitoring
+  labels:
+    # This label ensures Prometheus picks up these rules when using the default
+    # ruleSelector from kube-prometheus-stack. If you changed ruleSelector in
+    # values.yaml, update this label to match.
+    release: kube-prometheus-stack
+    app: kube-prometheus-stack
+  annotations:
+    # Regulatory mapping annotations for audit trail
+    compliance.regulated/ncua: "Part 748 - Anomaly detection and incident monitoring"
+    compliance.regulated/dora: "Article 10 - Detection of anomalous activities"
+    compliance.regulated/soc2: "CC7.2 - System monitoring, CC7.3 - Incident detection"
+    compliance.regulated/pci-dss: "Requirement 10.6 - Security event monitoring"
+spec:
+  groups:
+    # =========================================================================
+    #  SECURITY ALERT RULES
+    # =========================================================================
+    - name: security.rules
+      rules:
+
+        # ---------------------------------------------------------------------
+        # HIGH POD RESTART COUNT
+        # ---------------------------------------------------------------------
+        # Detects pods that are restarting frequently, which may indicate:
+        #   - Crash loops caused by an exploit or misconfiguration
+        #   - OOM kills from resource exhaustion attacks
+        #   - Failed liveness probes from compromised containers
+        #   - Application instability from injected malicious code
+        #
+        # WHY THIS MATTERS FOR SECURITY:
+        # Attackers sometimes trigger restarts to reset audit state, exploit
+        # race conditions during startup, or as a side effect of failed
+        # exploitation attempts. A sudden spike in restarts across multiple
+        # pods may indicate a cluster-wide attack.
+        #
+        # PROMQL EXPLANATION:
+        # increase(metric[1h]) calculates the increase in the counter over
+        # the last hour. If a pod restarted more than 5 times in 1 hour,
+        # and this persists for 10 minutes, the alert fires.
+        #
+        # TUNING:
+        # - Increase threshold (> 10) if your workloads have expected restarts
+        # - Decrease "for" duration (5m) for faster detection
+        # - Add namespace exclusions for known-noisy namespaces
+        # ---------------------------------------------------------------------
+        - alert: SecurityHighPodRestartCount
+          expr: increase(kube_pod_container_status_restarts_total[1h]) > 5
+          for: 10m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} restarting frequently ({{ $value }} restarts/hour)"
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted
+              {{ $value | humanize }} times in the last hour. Frequent restarts may indicate
+              a crash loop caused by exploitation, OOM kills from resource exhaustion, or
+              application instability from injected code.
+            runbook_url: "https://runbooks.example.com/security/high-pod-restarts"
+            regulatory_context: "DORA Art.10 - Anomalous activity detection"
+
+        # ---------------------------------------------------------------------
+        # NAMESPACE WITHOUT NETWORK POLICIES
+        # ---------------------------------------------------------------------
+        # Detects namespaces that have running pods but no NetworkPolicy
+        # resources defined. Without network policies, all pod-to-pod traffic
+        # within the cluster is allowed by default.
+        #
+        # WHY THIS MATTERS FOR SECURITY:
+        # Network policies implement microsegmentation -- a core security
+        # control that limits lateral movement. Without them, a compromised
+        # pod can freely communicate with every other pod in the cluster,
+        # including databases, secret stores, and control plane components.
+        #
+        # PROMQL EXPLANATION:
+        # This rule compares two metrics:
+        # 1. Namespaces that have pods (kube_pod_info grouped by namespace)
+        # 2. Namespaces that have network policies (kube_networkpolicy_labels)
+        # The "unless" operator returns namespaces that have pods but NO
+        # network policies. System namespaces are excluded via regex.
+        #
+        # TUNING:
+        # - Add additional namespace exclusions for infrastructure namespaces
+        # - In strict environments, change severity to "critical"
+        # - Reduce "for" to 0m if you want immediate alerting on new namespaces
+        #
+        # AKS NOTE:
+        # AKS supports NetworkPolicy via Azure CNI with Calico or Cilium.
+        # Ensure your AKS cluster has a network policy plugin enabled,
+        # otherwise NetworkPolicy resources are accepted but not enforced.
+        # ---------------------------------------------------------------------
+        - alert: SecurityNamespaceWithoutNetworkPolicy
+          expr: |
+            count by (namespace) (kube_pod_info)
+            unless
+            count by (namespace) (kube_networkpolicy_labels)
+            unless
+            count by (namespace) (kube_namespace_labels{namespace=~"kube-system|kube-public|kube-node-lease|monitoring|gatekeeper-system"})
+          for: 30m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Namespace {{ $labels.namespace }} has pods but no NetworkPolicy"
+            description: >-
+              Namespace {{ $labels.namespace }} contains running pods but has no
+              NetworkPolicy resources defined. Without network policies, all pod-to-pod
+              traffic is allowed by default, enabling unrestricted lateral movement
+              if a pod is compromised.
+            runbook_url: "https://runbooks.example.com/security/missing-network-policy"
+            regulatory_context: "NCUA Part 748 - Network segmentation; DORA Art.9 - Access control"
+
+        # ---------------------------------------------------------------------
+        # CONTAINER RUNNING AS ROOT
+        # ---------------------------------------------------------------------
+        # Detects containers that are running with UID 0 (root).
+        #
+        # WHY THIS MATTERS FOR SECURITY:
+        # Root containers have elevated privileges that make container escape
+        # easier. If an attacker gains code execution in a root container:
+        #   - They can modify the container filesystem freely
+        #   - They may exploit kernel vulnerabilities for host escape
+        #   - They can read/write to mounted volumes with full permissions
+        #   - They bypass many in-container security controls
+        #
+        # DEFENSE IN DEPTH:
+        # This alert works alongside Kyverno's require-run-as-nonroot policy:
+        #   - Kyverno PREVENTS new root containers (enforce mode)
+        #   - This alert DETECTS existing root containers (monitoring)
+        # Together they provide prevention + detection, satisfying the
+        # defense-in-depth principle required by most regulatory frameworks.
+        #
+        # PROMQL EXPLANATION:
+        # kube_pod_container_info provides metadata about running containers.
+        # This expression counts containers grouped by namespace, filtering
+        # where the container is running and checking if any container in the
+        # pod is running as root. Since kube-state-metrics does not directly
+        # expose the UID, we use the security context from the pod spec.
+        #
+        # NOTE: This rule uses kube_pod_container_security_context_run_as_user
+        # which requires kube-state-metrics v2.10+. If this metric is not
+        # available, the alert will simply not fire (it will not produce
+        # false positives).
+        #
+        # TUNING:
+        # - Exclude namespaces where root is expected (security tools, CNI)
+        # - Change severity to "critical" in strict compliance environments
+        # ---------------------------------------------------------------------
+        - alert: SecurityContainerRunningAsRoot
+          expr: |
+            kube_pod_container_security_context_run_as_user{uid="0"}
+            * on(namespace, pod) group_left()
+            (kube_pod_status_phase{phase="Running"} == 1)
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} is running as root"
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} (namespace
+              {{ $labels.namespace }}) is running as UID 0 (root). Root containers
+              increase the blast radius of container escapes and are prohibited by
+              most security frameworks. Investigate whether this container can be
+              reconfigured to run as a non-root user.
+            runbook_url: "https://runbooks.example.com/security/root-container"
+            regulatory_context: "NCUA Part 748 - Least privilege; DORA Art.9(4)(c) - Access control"
+
+        # ---------------------------------------------------------------------
+        # HIGH ERROR RATE
+        # ---------------------------------------------------------------------
+        # Detects sustained high HTTP error rates (5xx responses) from
+        # application workloads, which may indicate:
+        #   - Active exploitation attempts causing application errors
+        #   - Denial-of-service attacks overwhelming the service
+        #   - Compromised application behaving abnormally
+        #   - Configuration changes introduced by an attacker
+        #
+        # WHY THIS MATTERS FOR SECURITY:
+        # A sudden spike in 5xx errors, particularly combined with other
+        # signals (unusual network traffic, pod restarts), is a strong
+        # indicator of an active attack or compromised workload.
+        #
+        # PROMQL EXPLANATION:
+        # This rule uses a ratio of 5xx responses to total responses over
+        # the last 5 minutes. The rate() function calculates per-second
+        # rates from counter metrics. If more than 10% of responses are
+        # errors for 10 minutes, the alert fires.
+        #
+        # PREREQUISITES:
+        # This rule requires application pods to expose HTTP metrics in
+        # Prometheus format. Common approaches:
+        #   - Application instrumented with prometheus client library
+        #   - Istio/Linkerd service mesh (provides automatic metrics)
+        #   - nginx-ingress-controller metrics
+        #
+        # If no workload exposes these metrics, this rule simply does not
+        # fire (no false positives).
+        #
+        # TUNING:
+        # - Adjust the 0.10 threshold based on your application's baseline
+        # - Increase "for" duration for applications with bursty error patterns
+        # - Filter by specific namespaces for application-specific thresholds
+        # ---------------------------------------------------------------------
+        - alert: SecurityHighErrorRate
+          expr: |
+            (
+              sum by (namespace, service) (rate(http_requests_total{status=~"5.."}[5m]))
+              /
+              sum by (namespace, service) (rate(http_requests_total[5m]))
+            ) > 0.10
+          for: 10m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "High error rate for {{ $labels.service }} in {{ $labels.namespace }} ({{ $value | humanizePercentage }})"
+            description: >-
+              Service {{ $labels.service }} in namespace {{ $labels.namespace }} is returning
+              errors for {{ $value | humanizePercentage }} of requests over the last 5 minutes.
+              A sustained high error rate may indicate active exploitation, denial-of-service,
+              or a compromised workload. Correlate with pod restart counts, network traffic
+              patterns, and Falco security events for root cause analysis.
+            runbook_url: "https://runbooks.example.com/security/high-error-rate"
+            regulatory_context: "SOC 2 CC7.2 - Anomaly detection; DORA Art.10 - Incident detection"

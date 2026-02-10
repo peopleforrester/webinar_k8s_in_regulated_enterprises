@@ -1,0 +1,216 @@
+# ABOUTME: Default values for the hello-regulated Helm chart.
+# ABOUTME: Configures a compliant web application with security context, resource limits, and probes.
+
+# ------------------------------------------------------------------------------
+# Image Configuration
+# ------------------------------------------------------------------------------
+# The image block defines which container image to deploy. In regulated
+# environments, always pin images to a specific tag (never use "latest") and
+# consider using image digests for immutability.
+image:
+  # registry is the container registry hostname. Override this to pull from a
+  # private registry such as Azure Container Registry (ACR).
+  registry: docker.io
+  # repository is the image name within the registry.
+  repository: nginxinc/nginx-unprivileged
+  # tag is the specific image version to deploy. Always pin to a version tag
+  # rather than "latest" to ensure reproducible deployments. Kyverno policies
+  # in this repository enforce this requirement.
+  tag: "1.27-alpine"
+  # pullPolicy controls when the kubelet pulls the image.
+  # - IfNotPresent: pull only if the image is not already cached on the node.
+  # - Always: always pull, useful with mutable tags (not recommended).
+  # - Never: never pull, image must already exist on the node.
+  pullPolicy: IfNotPresent
+
+# imagePullSecrets is a list of Secret references for authenticating with
+# private container registries. Each entry should match a Secret of type
+# kubernetes.io/dockerconfigjson in the release namespace.
+# Example:
+#   imagePullSecrets:
+#     - name: acr-credentials
+imagePullSecrets: []
+
+# ------------------------------------------------------------------------------
+# Replica Configuration
+# ------------------------------------------------------------------------------
+# replicaCount sets the number of Pod replicas managed by the Deployment.
+# For production workloads in regulated environments, use at least 2 replicas
+# to maintain availability during node failures or rolling updates.
+replicaCount: 2
+
+# ------------------------------------------------------------------------------
+# Resource Requests and Limits
+# ------------------------------------------------------------------------------
+# Resource configuration is critical for regulated environments. Kyverno policies
+# in this repository enforce that all Pods must declare resource limits. Without
+# limits, a single container could exhaust node resources and impact other
+# workloads -- a denial-of-service risk flagged by DORA Article 11.
+resources:
+  # requests define the minimum resources guaranteed to the container.
+  # The Kubernetes scheduler uses requests to decide which node to place the Pod on.
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  # limits define the maximum resources the container may consume.
+  # The container is throttled (CPU) or OOM-killed (memory) if it exceeds these.
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# ------------------------------------------------------------------------------
+# Security Context
+# ------------------------------------------------------------------------------
+# Security context settings enforce the principle of least privilege. These
+# settings align with Kubernetes Pod Security Standards at the "restricted"
+# level, which is the baseline for regulated workloads.
+
+# podSecurityContext applies to all containers in the Pod.
+podSecurityContext:
+  # runAsNonRoot prevents the container from running as UID 0 (root).
+  # This limits the blast radius of container escapes. Kyverno policies
+  # in this repository enforce this requirement.
+  runAsNonRoot: true
+  # runAsUser sets the UID the container process runs as. UID 101 is the
+  # default nginx user in the nginxinc/nginx-unprivileged image.
+  runAsUser: 101
+  # runAsGroup sets the primary GID for the container process.
+  runAsGroup: 101
+  # fsGroup sets the GID applied to all files in mounted volumes.
+  # Processes running as the specified GID can read/write these files.
+  fsGroup: 101
+  # seccompProfile restricts the system calls the container can make.
+  # RuntimeDefault uses the container runtime's default seccomp profile,
+  # which blocks dangerous syscalls while allowing normal operation.
+  seccompProfile:
+    type: RuntimeDefault
+
+# containerSecurityContext applies to the individual container.
+containerSecurityContext:
+  # readOnlyRootFilesystem prevents the container from writing to its
+  # root filesystem. This blocks many attack techniques that rely on
+  # writing malicious scripts or binaries to the container filesystem.
+  # Applications that need writable directories should use emptyDir volumes.
+  readOnlyRootFilesystem: true
+  # allowPrivilegeEscalation prevents the container process from gaining
+  # additional privileges via setuid/setgid binaries or capabilities.
+  allowPrivilegeEscalation: false
+  # capabilities controls Linux capabilities granted to the container.
+  # Drop ALL capabilities and add back only what the application requires.
+  # Most web applications need no capabilities at all.
+  capabilities:
+    drop:
+      - ALL
+
+# ------------------------------------------------------------------------------
+# Service Configuration
+# ------------------------------------------------------------------------------
+# The Service exposes the application within the cluster. For production
+# workloads behind an ingress controller, ClusterIP is the standard choice.
+service:
+  # type defines how the Service is exposed.
+  # - ClusterIP: internal-only (default, recommended with ingress)
+  # - LoadBalancer: provisions a cloud load balancer (use for direct exposure)
+  # - NodePort: exposes on a static port on each node (avoid in production)
+  type: ClusterIP
+  # port is the port the Service listens on.
+  port: 80
+  # targetPort is the port the container listens on. The nginx-unprivileged
+  # image listens on 8080 by default because it runs as a non-root user
+  # and cannot bind to privileged ports below 1024.
+  targetPort: 8080
+
+# ------------------------------------------------------------------------------
+# Health Probes
+# ------------------------------------------------------------------------------
+# Liveness and readiness probes enable Kubernetes to detect and recover from
+# application failures. They are essential for reliable rolling updates and
+# automated remediation.
+
+# livenessProbe determines if the container is still running. If the probe
+# fails, Kubernetes restarts the container.
+livenessProbe:
+  httpGet:
+    path: /
+    port: 8080
+  # initialDelaySeconds is how long to wait before the first probe.
+  initialDelaySeconds: 10
+  # periodSeconds is how often to run the probe.
+  periodSeconds: 10
+  # timeoutSeconds is how long to wait for a probe response.
+  timeoutSeconds: 3
+  # failureThreshold is how many consecutive failures trigger a restart.
+  failureThreshold: 3
+
+# readinessProbe determines if the container is ready to receive traffic.
+# If the probe fails, the Pod is removed from Service endpoints.
+readinessProbe:
+  httpGet:
+    path: /
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# ------------------------------------------------------------------------------
+# Ingress Configuration
+# ------------------------------------------------------------------------------
+# Ingress exposes the Service externally via an ingress controller.
+# Disabled by default -- enable when an ingress controller is installed
+# and you need external access to the application.
+ingress:
+  # enabled controls whether an Ingress resource is created.
+  enabled: false
+  # className specifies which ingress controller to use (e.g., "nginx").
+  className: ""
+  # annotations are key-value pairs passed to the ingress controller.
+  # Use these to configure TLS termination, rate limiting, etc.
+  annotations: {}
+  # hosts is a list of hostname-to-path mappings.
+  hosts:
+    - host: hello-regulated.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # tls configures TLS termination at the ingress controller.
+  # In regulated environments, TLS should always be enabled for external traffic.
+  tls: []
+  #  - secretName: hello-regulated-tls
+  #    hosts:
+  #      - hello-regulated.local
+
+# ------------------------------------------------------------------------------
+# Scheduling Configuration
+# ------------------------------------------------------------------------------
+
+# nodeSelector constrains Pods to nodes with matching labels. In AKS, this is
+# commonly used to target specific node pools (e.g., system vs user pools).
+nodeSelector: {}
+# Example: schedule only on the user node pool
+#   kubernetes.azure.com/mode: user
+
+# tolerations allow Pods to schedule on nodes with matching taints.
+# Use this for dedicated node pools or GPU nodes that have taints applied.
+tolerations: []
+# Example: tolerate a dedicated-workload taint
+#   - key: "dedicated"
+#     operator: "Equal"
+#     value: "workloads"
+#     effect: "NoSchedule"
+
+# affinity defines advanced scheduling rules. Pod anti-affinity is recommended
+# for production workloads to spread replicas across nodes and availability zones.
+affinity: {}
+# Example: prefer spreading Pods across availability zones
+#   podAntiAffinity:
+#     preferredDuringSchedulingIgnoredDuringExecution:
+#       - weight: 100
+#         podAffinityTerm:
+#           labelSelector:
+#             matchExpressions:
+#               - key: app.kubernetes.io/name
+#                 operator: In
+#                 values:
+#                   - hello-regulated
+#           topologyKey: topology.kubernetes.io/zone

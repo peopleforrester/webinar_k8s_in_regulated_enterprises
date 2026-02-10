@@ -1,0 +1,959 @@
+# ABOUTME: Helm values for kube-prometheus-stack deployment on AKS.
+# ABOUTME: Educational reference with detailed comments explaining every configuration decision.
+#
+# =============================================================================
+# KUBE-PROMETHEUS-STACK HELM CHART VALUES
+# =============================================================================
+# Chart:   kube-prometheus-stack (prometheus-community/kube-prometheus-stack)
+# Docs:    https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack
+# Prom:    https://prometheus.io/docs/
+# Grafana: https://grafana.com/docs/
+#
+# PURPOSE:
+# kube-prometheus-stack is the standard way to deploy a full observability stack
+# on Kubernetes. It bundles:
+#   - Prometheus Server:    Time-series metrics collection and alerting
+#   - Alertmanager:         Alert deduplication, grouping, and routing
+#   - Grafana:              Visualization dashboards
+#   - node-exporter:        Host-level metrics (CPU, memory, disk, network)
+#   - kube-state-metrics:   Kubernetes object state metrics
+#   - Prometheus Operator:  Manages Prometheus/Alertmanager lifecycle via CRDs
+#
+# WHY KUBE-PROMETHEUS-STACK FOR REGULATED INDUSTRIES?
+# 1. Provides continuous monitoring required by NCUA/FFIEC, DORA, PCI-DSS
+# 2. Alerting capabilities satisfy incident detection requirements
+# 3. Retention and storage provide audit trail for capacity monitoring
+# 4. Grafana dashboards map metrics to regulatory control evidence
+# 5. ServiceMonitor CRDs allow each security tool to self-register for scraping
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748:  "Continuous monitoring of system health and capacity"
+#   - DORA Article 10: "Detection of anomalous activities in ICT systems"
+#   - DORA Article 11: "Capacity management and performance monitoring"
+#   - SOC 2 CC7.2:    "System monitoring and anomaly detection"
+#   - PCI-DSS 10.6:   "Review of audit logs and security events"
+#
+# DEMO vs PRODUCTION:
+# This file is configured for a lab/demo environment. Key differences from
+# production are called out inline. The most significant differences:
+#   - Retention: 72h (lab) vs 15-30 days (production)
+#   - Storage:   10Gi (lab) vs 100-500Gi (production)
+#   - Resources: Minimal (lab) vs sized to cluster scale (production)
+#   - Alertmanager receivers: Commented out (lab) vs configured (production)
+# =============================================================================
+
+# =============================================================================
+#  PROMETHEUS SERVER
+# =============================================================================
+# The core metrics collection engine. Scrapes targets, stores time-series data,
+# and evaluates alerting rules.
+#
+# HOW PROMETHEUS WORKS:
+# 1. Prometheus discovers targets via ServiceMonitor/PodMonitor CRDs
+# 2. Every scrapeInterval, it sends HTTP GET to each target's /metrics endpoint
+# 3. Metrics are stored in a local TSDB (time-series database)
+# 4. Alerting rules are evaluated every evaluation_interval
+# 5. Firing alerts are sent to Alertmanager
+#
+# ARCHITECTURE NOTE:
+# Prometheus uses a pull-based model (it scrapes targets) rather than push-based
+# (targets sending metrics to Prometheus). This means Prometheus controls the
+# scrape rate and can detect when targets are down (scrape failures).
+# =============================================================================
+prometheus:
+
+  # ---------------------------------------------------------------------------
+  # Prometheus Spec
+  # ---------------------------------------------------------------------------
+  # These settings are passed directly to the Prometheus CRD managed by the
+  # Prometheus Operator. The operator reconciles this spec into the actual
+  # Prometheus StatefulSet.
+  # ---------------------------------------------------------------------------
+  prometheusSpec:
+
+    # -------------------------------------------------------------------------
+    # Retention Period
+    # -------------------------------------------------------------------------
+    # How long to keep metrics data before automatic deletion.
+    #
+    # LAB SETTING: 72h (3 days)
+    #   - Sufficient to observe daily patterns and test alerting rules
+    #   - Keeps storage requirements minimal for demo clusters
+    #   - Allows reviewing metrics from a demo session the previous day
+    #
+    # PRODUCTION GUIDANCE:
+    #   - 15d: Minimum for most incident investigation workflows
+    #   - 30d: Standard for capacity planning and trend analysis
+    #   - 90d+: Use Thanos/Cortex/Mimir for long-term storage
+    #           (Prometheus local storage is not designed for months of data)
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 10.7):
+    # "Retain audit trail history for at least one year, with a minimum of
+    # three months immediately available." For this requirement, use Thanos
+    # or Cortex with object storage (S3/GCS/Azure Blob) for long-term
+    # retention beyond the local Prometheus retention window.
+    #
+    # FORMULA FOR STORAGE SIZING:
+    # needed_disk = retention_time_seconds * ingested_samples_per_second * bytes_per_sample
+    # With ~2 bytes/sample average, 50k samples/s, 72h:
+    #   72 * 3600 * 50000 * 2 = ~25 GB (we use 10Gi for a small demo cluster)
+    # -------------------------------------------------------------------------
+    retention: 72h
+
+    # -------------------------------------------------------------------------
+    # Retention Size (optional, commented out)
+    # -------------------------------------------------------------------------
+    # When set, Prometheus deletes oldest data when storage exceeds this size,
+    # regardless of the time-based retention setting. Acts as a safety net.
+    #
+    # retentionSize: 9GB
+    # -------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # Scrape Interval
+    # -------------------------------------------------------------------------
+    # How frequently Prometheus scrapes all targets. This is the global default;
+    # individual ServiceMonitors can override it.
+    #
+    # LAB SETTING: 30s
+    #   - Good balance between metric resolution and resource consumption
+    #   - Sufficient for alerting rules with typical 1-5 minute evaluation windows
+    #
+    # TRADE-OFF:
+    #   Lower interval (15s):
+    #     + Higher resolution metrics
+    #     + Faster anomaly detection
+    #     - More storage consumption (~2x at 15s vs 30s)
+    #     - More CPU/memory usage on Prometheus
+    #     - More load on scrape targets
+    #
+    #   Higher interval (60s):
+    #     + Lower resource usage
+    #     + Less storage needed
+    #     - Coarser metrics resolution
+    #     - Slower anomaly detection (may miss brief spikes)
+    #     - Alert rules with short "for" durations become unreliable
+    #
+    # PRODUCTION GUIDANCE:
+    # Use 30s globally and override to 15s for security-critical targets
+    # (Falco, Kyverno) via their ServiceMonitor scrapeInterval settings.
+    #
+    # REGULATORY CONTEXT (DORA Article 10):
+    # "Timely detection" requires scrape intervals short enough to catch
+    # anomalies within the response window defined in your incident plan.
+    # -------------------------------------------------------------------------
+    scrapeInterval: 30s
+
+    # -------------------------------------------------------------------------
+    # Evaluation Interval
+    # -------------------------------------------------------------------------
+    # How frequently Prometheus evaluates alerting and recording rules.
+    # Should match or be shorter than scrapeInterval. Setting it equal to
+    # scrapeInterval means every fresh scrape is immediately evaluated.
+    # -------------------------------------------------------------------------
+    evaluationInterval: 30s
+
+    # -------------------------------------------------------------------------
+    # Persistent Storage
+    # -------------------------------------------------------------------------
+    # Prometheus metrics are stored in a local time-series database (TSDB).
+    # Without persistent storage, all metrics are lost on pod restart.
+    #
+    # WHY PERSISTENT STORAGE?
+    # 1. Survive pod restarts without data loss
+    # 2. Survive node failures (PV is reattached to new node)
+    # 3. Retain historical data for the configured retention period
+    # 4. Required for any regulatory compliance that mandates metric retention
+    #
+    # LAB SETTING: 10Gi
+    #   - Sufficient for 72h retention on a small cluster (<20 nodes)
+    #   - Uses default StorageClass (on AKS: Azure Managed Disk)
+    #
+    # PRODUCTION SIZING:
+    #   Small (1-20 nodes):    50Gi
+    #   Medium (20-100 nodes): 100-200Gi
+    #   Large (100+ nodes):    500Gi+ (consider Thanos for horizontal scaling)
+    #
+    # AKS NOTE:
+    # The default AKS StorageClass provisions Azure Managed Disks (Standard_LRS).
+    # For production, consider using managed-premium (Premium_LRS) for better
+    # IOPS. Prometheus TSDB is write-heavy during compaction.
+    #
+    # REGULATORY CONTEXT (NCUA Part 748):
+    # "Maintain adequate records of system performance."
+    # Persistent storage ensures metric history survives infrastructure events.
+    # -------------------------------------------------------------------------
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          # storageClassName: managed-premium  # Uncomment for production on AKS
+
+    # -------------------------------------------------------------------------
+    # Resource Requests and Limits
+    # -------------------------------------------------------------------------
+    # Prometheus is memory-intensive. It holds all active time-series in memory
+    # for fast query evaluation and ingestion.
+    #
+    # LAB SETTING:
+    #   requests: 500m CPU / 1Gi memory
+    #   limits:   1 CPU / 2Gi memory
+    #
+    # MEMORY SIZING RULE OF THUMB:
+    # ~3KB per active time-series. A small cluster with kube-prometheus-stack
+    # defaults generates ~10,000 time-series = ~30MB baseline.
+    # Each additional application with ServiceMonitor adds ~500-2000 series.
+    #
+    # PRODUCTION SIZING:
+    #   Small (1-20 nodes):    2 CPU / 4Gi
+    #   Medium (20-100 nodes): 4 CPU / 8Gi
+    #   Large (100+ nodes):    8 CPU / 16Gi
+    #
+    # IF PROMETHEUS IS OOM-KILLED:
+    # 1. Increase memory limits
+    # 2. Reduce number of scraped targets
+    # 3. Reduce label cardinality (high-cardinality labels cause memory bloat)
+    # 4. Use metric relabeling to drop unused metrics before ingestion
+    # -------------------------------------------------------------------------
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    # -------------------------------------------------------------------------
+    # Replica Count
+    # -------------------------------------------------------------------------
+    # Number of Prometheus server replicas.
+    #
+    # LAB SETTING: 1
+    #   - Single replica is sufficient for demo/dev environments
+    #   - Simplifies storage and avoids duplicate alert firing
+    #
+    # PRODUCTION GUIDANCE:
+    # Use 2 replicas with Thanos sidecar for HA. Without Thanos, multiple
+    # Prometheus replicas each scrape independently and produce duplicate
+    # alerts. Thanos deduplicates queries across replicas.
+    #
+    # REGULATORY CONTEXT (DORA Article 11):
+    # "ICT systems shall be resilient." For production, 2+ replicas with
+    # Thanos ensure monitoring survives single-node failures.
+    # -------------------------------------------------------------------------
+    replicas: 1
+
+    # -------------------------------------------------------------------------
+    # Rule Selector
+    # -------------------------------------------------------------------------
+    # Controls which PrometheusRule CRDs Prometheus loads.
+    #
+    # Setting this to {} (empty) means Prometheus will load ALL
+    # PrometheusRule CRDs in all namespaces. This is the simplest
+    # configuration and appropriate for most deployments.
+    #
+    # To restrict to specific rules, use label selectors:
+    #   ruleSelector:
+    #     matchLabels:
+    #       release: kube-prometheus-stack
+    #
+    # WHY EMPTY SELECTOR?
+    # Other tools (Falco, Kyverno, Trivy) may install their own
+    # PrometheusRule CRDs. An empty selector ensures they are all picked up
+    # without requiring each tool to add a specific label.
+    # -------------------------------------------------------------------------
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+    # -------------------------------------------------------------------------
+    # Service Monitor Selector
+    # -------------------------------------------------------------------------
+    # Controls which ServiceMonitor CRDs Prometheus watches for scrape targets.
+    #
+    # Empty selector means Prometheus will scrape targets defined by ANY
+    # ServiceMonitor in ANY namespace. This is the recommended setting when
+    # deploying multiple tools that each provide their own ServiceMonitor.
+    #
+    # SECURITY TOOL INTEGRATION:
+    # When other security tools set serviceMonitor.enabled: true in their
+    # Helm values, they create ServiceMonitor CRDs that Prometheus
+    # automatically discovers with this empty selector.
+    # -------------------------------------------------------------------------
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    # -------------------------------------------------------------------------
+    # Pod Monitor Selector
+    # -------------------------------------------------------------------------
+    # Similar to ServiceMonitor but targets pods directly (without a Service).
+    # Empty selector picks up all PodMonitor CRDs.
+    # -------------------------------------------------------------------------
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+# =============================================================================
+#  ALERTMANAGER
+# =============================================================================
+# Alertmanager handles alert deduplication, grouping, inhibition, silencing,
+# and routing to notification channels.
+#
+# HOW ALERTMANAGER WORKS:
+# 1. Prometheus sends firing alerts to Alertmanager
+# 2. Alertmanager groups related alerts (e.g., all alerts for one namespace)
+# 3. Grouped alerts are routed to receivers based on label matching
+# 4. Receivers send notifications (Slack, email, PagerDuty, webhooks)
+# 5. Resolved alerts trigger recovery notifications
+#
+# REGULATORY CONTEXT (SOC 2 CC7.3):
+# "The entity evaluates events to determine whether they indicate incidents."
+# Alertmanager's grouping and routing ensures security events reach the right
+# team with sufficient context for incident evaluation.
+# =============================================================================
+alertmanager:
+
+  # ---------------------------------------------------------------------------
+  # Enable/Disable Alertmanager
+  # ---------------------------------------------------------------------------
+  # Even in a lab, keeping Alertmanager enabled lets you test alert routing
+  # and understand how alerts flow from PrometheusRule -> Alertmanager -> receiver.
+  # ---------------------------------------------------------------------------
+  enabled: true
+
+  alertmanagerSpec:
+
+    # -------------------------------------------------------------------------
+    # Replica Count
+    # -------------------------------------------------------------------------
+    # Alertmanager uses a gossip protocol to deduplicate alerts across replicas.
+    #
+    # LAB SETTING: 1
+    #   - Single replica is sufficient for lab/demo
+    #   - No gossip overhead
+    #
+    # PRODUCTION GUIDANCE:
+    # Use 3 replicas for HA. Alertmanager replicas use a mesh protocol to
+    # ensure each notification is sent exactly once, even with multiple replicas.
+    # -------------------------------------------------------------------------
+    replicas: 1
+
+    # -------------------------------------------------------------------------
+    # Resource Requests and Limits
+    # -------------------------------------------------------------------------
+    # Alertmanager is lightweight -- most of its work is routing and HTTP calls.
+    #
+    # PRODUCTION: Double these values for clusters with >100 active alerts.
+    # -------------------------------------------------------------------------
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager Configuration
+  # ---------------------------------------------------------------------------
+  # This defines the routing tree and notification receivers.
+  #
+  # ROUTING LOGIC:
+  # 1. All alerts enter through the top-level "route"
+  # 2. "group_by" determines which alerts are batched together
+  # 3. "group_wait" is the initial wait before sending the first notification
+  # 4. "group_interval" is the wait before sending updates to a group
+  # 5. "repeat_interval" is how often to resend unresolved alerts
+  # 6. Child routes match alerts to specific receivers based on labels
+  #
+  # CONFIGURING RECEIVERS:
+  # Uncomment the desired receiver sections below and fill in your values.
+  # Multiple receivers can be active simultaneously.
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Establish notification procedures for cybersecurity incidents."
+  # Configure receivers to route critical/security alerts to your incident
+  # response team and informational alerts to your operations channel.
+  # ---------------------------------------------------------------------------
+  config:
+    global:
+      # -----------------------------------------------------------------------
+      # Global Resolve Timeout
+      # -----------------------------------------------------------------------
+      # How long to wait before marking an alert as resolved if Prometheus
+      # stops sending it. 5 minutes is standard.
+      # -----------------------------------------------------------------------
+      resolve_timeout: 5m
+
+      # -----------------------------------------------------------------------
+      # Slack API URL (uncomment to enable Slack notifications)
+      # -----------------------------------------------------------------------
+      # slack_api_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+      # -----------------------------------------------------------------------
+
+      # -----------------------------------------------------------------------
+      # SMTP Configuration (uncomment to enable email notifications)
+      # -----------------------------------------------------------------------
+      # smtp_smarthost: "smtp.example.com:587"
+      # smtp_from: "alertmanager@example.com"
+      # smtp_auth_username: "alertmanager@example.com"
+      # smtp_auth_password: "your-smtp-password"
+      # smtp_require_tls: true
+      # -----------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # Alert Routing
+    # -------------------------------------------------------------------------
+    route:
+      # Default receiver for alerts that don't match any child route
+      receiver: "null"
+
+      # Group alerts by these labels -- alerts with the same values for these
+      # labels are batched into a single notification
+      group_by:
+        - alertname
+        - namespace
+
+      # Wait 30s after the first alert in a group before sending notification.
+      # This allows related alerts to be grouped together.
+      group_wait: 30s
+
+      # Wait 5m before sending updates about a group that already notified.
+      group_interval: 5m
+
+      # Resend unresolved alerts every 4 hours.
+      repeat_interval: 4h
+
+      # -----------------------------------------------------------------------
+      # Child Routes (uncomment to enable routing to specific receivers)
+      # -----------------------------------------------------------------------
+      # Routes are evaluated in order; first match wins.
+      #
+      # routes:
+      #   # Critical alerts -> PagerDuty or immediate channel
+      #   - match:
+      #       severity: critical
+      #     receiver: "slack-critical"
+      #     repeat_interval: 1h
+      #
+      #   # Security alerts -> dedicated security channel
+      #   - match_re:
+      #       alertname: "^(Security|Falco|Kyverno).*"
+      #     receiver: "slack-security"
+      #     repeat_interval: 2h
+      #
+      #   # Warning alerts -> general ops channel
+      #   - match:
+      #       severity: warning
+      #     receiver: "slack-warnings"
+      #     repeat_interval: 4h
+      # -----------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # Receivers
+    # -------------------------------------------------------------------------
+    # Each receiver defines how notifications are delivered.
+    # -------------------------------------------------------------------------
+    receivers:
+      # The "null" receiver discards alerts (useful as default when receivers
+      # are not yet configured).
+      - name: "null"
+
+      # -----------------------------------------------------------------------
+      # Slack Receiver (uncomment to enable)
+      # -----------------------------------------------------------------------
+      # - name: "slack-critical"
+      #   slack_configs:
+      #     - channel: "#alerts-critical"
+      #       send_resolved: true
+      #       title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+      #       text: >-
+      #         {{ range .Alerts }}
+      #         *Alert:* {{ .Annotations.summary }}
+      #         *Severity:* {{ .Labels.severity }}
+      #         *Namespace:* {{ .Labels.namespace }}
+      #         *Description:* {{ .Annotations.description }}
+      #         {{ end }}
+      #
+      # - name: "slack-security"
+      #   slack_configs:
+      #     - channel: "#security-alerts"
+      #       send_resolved: true
+      #
+      # - name: "slack-warnings"
+      #   slack_configs:
+      #     - channel: "#alerts-warning"
+      #       send_resolved: true
+      # -----------------------------------------------------------------------
+
+      # -----------------------------------------------------------------------
+      # Email Receiver (uncomment to enable)
+      # -----------------------------------------------------------------------
+      # - name: "email-critical"
+      #   email_configs:
+      #     - to: "oncall-team@example.com"
+      #       send_resolved: true
+      # -----------------------------------------------------------------------
+
+      # -----------------------------------------------------------------------
+      # PagerDuty Receiver (uncomment to enable)
+      # -----------------------------------------------------------------------
+      # - name: "pagerduty-critical"
+      #   pagerduty_configs:
+      #     - service_key: "YOUR-PAGERDUTY-SERVICE-KEY"
+      #       send_resolved: true
+      # -----------------------------------------------------------------------
+
+      # -----------------------------------------------------------------------
+      # Webhook Receiver (uncomment to enable)
+      # -----------------------------------------------------------------------
+      # Generic webhook receiver -- sends JSON POST to any HTTP endpoint.
+      # Useful for custom integrations, ChatOps bots, or SIEM ingestion.
+      #
+      # - name: "webhook-siem"
+      #   webhook_configs:
+      #     - url: "https://siem.example.com/api/alerts"
+      #       send_resolved: true
+      # -----------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # Inhibition Rules
+    # -------------------------------------------------------------------------
+    # Inhibition rules suppress notifications for lower-severity alerts when
+    # a higher-severity alert for the same target is already firing.
+    #
+    # Example: If a node is down (critical), suppress individual pod alerts
+    # (warning) on that node -- the root cause is already being notified.
+    #
+    # REGULATORY CONTEXT (DORA Article 10):
+    # Inhibition reduces alert noise, helping incident responders focus on
+    # root causes rather than symptoms.
+    # -------------------------------------------------------------------------
+    inhibit_rules:
+      - source_matchers:
+          - severity = critical
+        target_matchers:
+          - severity =~ warning|info
+        equal:
+          - namespace
+          - alertname
+
+# =============================================================================
+#  GRAFANA
+# =============================================================================
+# Grafana provides visualization dashboards that query Prometheus via PromQL.
+# kube-prometheus-stack deploys Grafana with pre-built dashboards for
+# Kubernetes cluster health, node resources, and workload metrics.
+#
+# WHY GRAFANA FOR REGULATED ENVIRONMENTS?
+# 1. Visual evidence of control effectiveness for auditors
+# 2. Dashboards can map metrics directly to regulatory controls
+# 3. RBAC controls who can view/edit dashboards
+# 4. Dashboard snapshots provide point-in-time compliance evidence
+#
+# REGULATORY CONTEXT (SOC 2 CC7.2):
+# "The entity monitors system components for anomalies."
+# Grafana dashboards provide the visual layer for continuous monitoring.
+# =============================================================================
+grafana:
+
+  # ---------------------------------------------------------------------------
+  # Enable/Disable Grafana
+  # ---------------------------------------------------------------------------
+  enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Admin Credentials
+  # ---------------------------------------------------------------------------
+  # Default admin password for Grafana. Change this in production and store
+  # the credential in a Kubernetes Secret or external secret manager.
+  #
+  # SECURITY NOTE:
+  # In production, use grafana.admin.existingSecret to reference a pre-created
+  # Kubernetes Secret rather than storing passwords in values.yaml.
+  # ---------------------------------------------------------------------------
+  adminPassword: prom-operator
+
+  # ---------------------------------------------------------------------------
+  # Default Dashboards
+  # ---------------------------------------------------------------------------
+  # The chart includes pre-built dashboards for:
+  #   - Kubernetes cluster overview
+  #   - Node exporter (per-node resource usage)
+  #   - Pod/container metrics
+  #   - Prometheus self-monitoring
+  #   - Alertmanager status
+  #
+  # Setting defaultDashboardsEnabled: true installs all of these.
+  # They are stored as ConfigMaps and loaded by the Grafana sidecar.
+  # ---------------------------------------------------------------------------
+  defaultDashboardsEnabled: true
+
+  # ---------------------------------------------------------------------------
+  # Sidecar Configuration
+  # ---------------------------------------------------------------------------
+  # The sidecar watches for ConfigMaps with a specific label and automatically
+  # loads them as Grafana dashboards or datasources. This enables:
+  #   1. Other Helm charts to ship their own dashboards
+  #   2. Custom dashboards deployed via GitOps
+  #   3. Automatic dashboard updates without Grafana restarts
+  #
+  # HOW IT WORKS:
+  # 1. Create a ConfigMap with the label "grafana_dashboard: '1'"
+  # 2. The sidecar detects it within 60 seconds (watchServerTimeout)
+  # 3. Dashboard JSON is extracted and provisioned into Grafana
+  #
+  # CUSTOM DASHBOARD EXAMPLE:
+  # apiVersion: v1
+  # kind: ConfigMap
+  # metadata:
+  #   name: security-compliance-dashboard
+  #   labels:
+  #     grafana_dashboard: "1"
+  # data:
+  #   security-compliance.json: |
+  #     { "dashboard": { ... } }
+  # ---------------------------------------------------------------------------
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      # Search all namespaces for dashboard ConfigMaps
+      searchNamespace: ALL
+
+    datasources:
+      enabled: true
+      label: grafana_datasource
+
+  # ---------------------------------------------------------------------------
+  # Persistence
+  # ---------------------------------------------------------------------------
+  # Grafana stores user preferences, annotations, and session data in a local
+  # SQLite database. Without persistence, these are lost on pod restart.
+  #
+  # LAB SETTING: Disabled
+  #   - Dashboards are provisioned from ConfigMaps (survive pod restarts)
+  #   - User customizations are lost on restart (acceptable for lab)
+  #
+  # PRODUCTION GUIDANCE:
+  # Enable persistence with 5-10Gi PVC. Alternatively, use an external
+  # PostgreSQL database for Grafana state (recommended for HA setups).
+  #
+  # persistence:
+  #   enabled: true
+  #   size: 5Gi
+  # ---------------------------------------------------------------------------
+  persistence:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Resource Requests and Limits
+  # ---------------------------------------------------------------------------
+  # Grafana is relatively lightweight unless serving many concurrent users
+  # or rendering complex dashboards.
+  #
+  # LAB SETTING: Minimal resources
+  # PRODUCTION: Increase to 500m/512Mi for 10+ concurrent users
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# =============================================================================
+#  NODE EXPORTER
+# =============================================================================
+# node-exporter runs as a DaemonSet on every node and exposes hardware and
+# OS-level metrics: CPU usage, memory, disk I/O, network traffic, filesystem
+# utilization, and more.
+#
+# WHY NODE EXPORTER?
+# Kubernetes metrics (from kubelet/cAdvisor) show container-level resource
+# usage. node-exporter shows the underlying host metrics, which are critical
+# for capacity planning and detecting infrastructure-level issues.
+#
+# REGULATORY CONTEXT (DORA Article 11):
+# "ICT capacity management and performance testing"
+# node-exporter metrics are the foundation for capacity monitoring alerts.
+# =============================================================================
+nodeExporter:
+
+  # ---------------------------------------------------------------------------
+  # Enable node-exporter
+  # ---------------------------------------------------------------------------
+  # Should always be enabled. Without node-exporter, you lose visibility
+  # into the underlying infrastructure supporting your workloads.
+  # ---------------------------------------------------------------------------
+  enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Tolerations
+  # ---------------------------------------------------------------------------
+  # node-exporter MUST run on all nodes to provide complete infrastructure
+  # visibility. These tolerations ensure it runs on:
+  #   - Control plane nodes (tainted with NoSchedule)
+  #   - Specialized workload nodes (GPU, spot instances)
+  #   - Any node with custom taints
+  #
+  # SECURITY IMPLICATION:
+  # A node without node-exporter is a monitoring blind spot. Capacity issues
+  # or hardware failures on that node would go undetected.
+  # ---------------------------------------------------------------------------
+  tolerations:
+    - operator: Exists
+
+  # ---------------------------------------------------------------------------
+  # Resource Requests and Limits
+  # ---------------------------------------------------------------------------
+  # node-exporter is very lightweight -- it reads from /proc and /sys.
+  # These resources are sufficient for most environments.
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# =============================================================================
+#  KUBE-STATE-METRICS
+# =============================================================================
+# kube-state-metrics listens to the Kubernetes API server and generates metrics
+# about the state of Kubernetes objects: deployments, pods, nodes, services,
+# PVCs, jobs, and more.
+#
+# EXAMPLE METRICS:
+#   kube_pod_container_status_restarts_total:  Container restart count
+#   kube_deployment_status_replicas_available: Healthy replicas
+#   kube_node_status_condition:                Node health conditions
+#   kube_pod_container_resource_limits:        Configured resource limits
+#   kube_namespace_labels:                     Namespace metadata
+#
+# WHY KUBE-STATE-METRICS?
+# Prometheus scrapes runtime metrics (CPU %, memory bytes). kube-state-metrics
+# provides declared-state metrics (desired replicas, resource limits, labels).
+# Together they answer: "Is the cluster in the state we declared it should be?"
+# =============================================================================
+kubeStateMetrics:
+
+  # ---------------------------------------------------------------------------
+  # Enable kube-state-metrics
+  # ---------------------------------------------------------------------------
+  enabled: true
+
+# Subchart configuration for kube-state-metrics
+kube-state-metrics:
+  # ---------------------------------------------------------------------------
+  # Resource Requests and Limits
+  # ---------------------------------------------------------------------------
+  # kube-state-metrics watches the API server and holds object state in memory.
+  # Memory usage scales with the number of Kubernetes objects in the cluster.
+  #
+  # SIZING GUIDANCE:
+  #   <500 objects:    50m/64Mi (this setting)
+  #   500-5000:        100m/128Mi
+  #   5000-50000:      200m/256Mi
+  #   50000+:          Consider sharding kube-state-metrics
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# =============================================================================
+#  AKS MANAGED CONTROL PLANE COMPONENTS
+# =============================================================================
+# AKS (and most managed Kubernetes services) run the control plane components
+# (etcd, scheduler, controller-manager, kube-proxy) on infrastructure that is
+# NOT accessible to the customer. Their /metrics endpoints are not reachable.
+#
+# DISABLING THESE PREVENTS:
+# 1. Persistent "target down" alerts that create alert fatigue
+# 2. Unnecessary scrape attempts that clutter Prometheus logs
+# 3. False negatives in control plane health dashboards
+#
+# IF YOU ARE RUNNING SELF-MANAGED KUBERNETES (kubeadm, RKE, etc.):
+# Set these all to enabled: true. You will need to configure the correct
+# endpoints for each component in your cluster.
+#
+# EKS/GKE NOTE:
+# These components are also not scrapeable on EKS and GKE. The same
+# disabled configuration applies to all managed Kubernetes services.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# kube-proxy
+# ---------------------------------------------------------------------------
+# kube-proxy handles service routing (iptables/IPVS rules).
+# On AKS, kube-proxy metrics are not exposed.
+# ---------------------------------------------------------------------------
+kubeProxy:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# etcd
+# ---------------------------------------------------------------------------
+# etcd is the Kubernetes key-value store. On AKS, etcd is fully managed
+# and its metrics endpoint (port 2381) is not accessible.
+# ---------------------------------------------------------------------------
+kubeEtcd:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# kube-scheduler
+# ---------------------------------------------------------------------------
+# The scheduler assigns pods to nodes. On AKS, the scheduler runs on
+# Microsoft-managed infrastructure and its metrics are not exposed.
+# ---------------------------------------------------------------------------
+kubeScheduler:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# kube-controller-manager
+# ---------------------------------------------------------------------------
+# The controller manager runs reconciliation loops (deployments, replicasets,
+# etc.). On AKS, it runs on managed infrastructure and is not scrapeable.
+# ---------------------------------------------------------------------------
+kubeControllerManager:
+  enabled: false
+
+# =============================================================================
+#  DEFAULT ALERTING RULES
+# =============================================================================
+# kube-prometheus-stack ships with a comprehensive set of PrometheusRule CRDs
+# covering common failure scenarios. These are installed as standard
+# Kubernetes resources and loaded by Prometheus automatically.
+#
+# RULE GROUPS:
+# Each group covers a specific monitoring domain. Disabling a group removes
+# all alert rules in that category.
+#
+# CUSTOMIZATION:
+# To customize a default rule without modifying the chart, create your own
+# PrometheusRule CRD with the same alert name. Prometheus uses the last-loaded
+# rule for deduplication. Alternatively, use the additionalPrometheusRules
+# section at the bottom of this file to add custom rules.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Implement monitoring controls proportional to the risk profile."
+# Enable rule groups that align with your regulatory requirements.
+# =============================================================================
+defaultRules:
+  create: true
+
+  rules:
+    # -------------------------------------------------------------------------
+    # Alert Rule Groups
+    # -------------------------------------------------------------------------
+    # Each group maps to a monitoring domain. All are enabled for comprehensive
+    # coverage in this lab. In production, review and tune thresholds.
+    # -------------------------------------------------------------------------
+
+    # Alerts for Alertmanager itself (e.g., cluster peer not found, config reload failure)
+    alertmanager: true
+
+    # Alerts for etcd health (disabled on AKS -- etcd is managed)
+    etcd: false
+
+    # General Kubernetes alerts (pod restarts, OOM kills, pending pods)
+    general: true
+
+    # Kubernetes resource state alerts (deployment replicas, daemonset scheduling)
+    k8s: true
+
+    # Kubelet and container runtime alerts
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+
+    # Prometheus self-monitoring alerts (scrape failures, rule evaluation errors)
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+
+    # Scheduler alerts (disabled on AKS -- scheduler is managed)
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+    # Node-level alerts (high CPU, memory pressure, disk full, network errors)
+    node: true
+
+    # Node-exporter specific alerts
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+
+    # Prometheus operator alerts
+    prometheusOperator: true
+
+    # Prometheus server alerts
+    prometheus: true
+
+# =============================================================================
+#  SERVICE MONITOR DEFAULTS
+# =============================================================================
+# Global defaults for ServiceMonitor resources created by this chart.
+# Individual ServiceMonitors for each component can override these.
+# =============================================================================
+
+# The Prometheus Operator watches for ServiceMonitor CRDs and automatically
+# configures Prometheus to scrape the targets they define.
+#
+# Default scrape interval matches the global setting (30s).
+# Default scrape timeout is 10s (must be less than scrapeInterval).
+
+# =============================================================================
+#  PROMETHEUS OPERATOR
+# =============================================================================
+# The operator manages the lifecycle of Prometheus, Alertmanager, and
+# ThanosRuler custom resources. It watches for CRD changes and reconciles
+# the actual StatefulSets/Deployments.
+# =============================================================================
+prometheusOperator:
+
+  # ---------------------------------------------------------------------------
+  # Resource Requests and Limits
+  # ---------------------------------------------------------------------------
+  # The operator is lightweight -- it watches CRDs and manages StatefulSets.
+  # These resources are sufficient for most clusters.
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+# =============================================================================
+#  ADDITIONAL PROMETHEUS RULES (CUSTOM)
+# =============================================================================
+# Add custom PrometheusRule resources here. These are deployed as separate
+# CRDs alongside the default rules.
+#
+# For security-focused alerting rules, see alert-rules/security-alerts.yaml
+# which is deployed separately via kubectl apply.
+#
+# EXAMPLE:
+# additionalPrometheusRulesMap:
+#   custom-alerts:
+#     groups:
+#       - name: custom.rules
+#         rules:
+#           - alert: HighMemoryUsage
+#             expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+#             for: 5m
+#             labels:
+#               severity: warning
+#             annotations:
+#               summary: "Node {{ $labels.instance }} has less than 10% memory available"
+# =============================================================================
+additionalPrometheusRulesMap: {}

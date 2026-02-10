@@ -1,0 +1,99 @@
+# ABOUTME: Constraint that instantiates the K8sRequireResourceLimits ConstraintTemplate.
+# ABOUTME: Enforces CPU and memory limits on all containers across application namespaces.
+#
+# =============================================================================
+# CONSTRAINT: Require Resource Limits
+# =============================================================================
+# This Constraint instantiates the K8sRequireResourceLimits ConstraintTemplate
+# and requires both CPU and memory limits on all containers.
+#
+# WHY REQUIRE BOTH CPU AND MEMORY LIMITS?
+# - Memory limits prevent OOMKilled cascades across the node
+# - CPU limits prevent CPU starvation of co-located workloads
+# - Together they enable Kubernetes QoS class Guaranteed (when requests = limits)
+# - Required for predictable capacity planning in regulated environments
+#
+# DEPLOYMENT WORKFLOW:
+# 1. Deploy with enforcementAction: dryrun
+# 2. Run: kubectl describe k8srequireresourcelimits require-resource-limits
+# 3. Review status.violations to find non-compliant workloads
+# 4. Work with application teams to add resource limits
+# 5. Switch to enforcementAction: deny once all workloads comply
+# =============================================================================
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireResourceLimits
+metadata:
+  name: require-resource-limits
+  annotations:
+    # Regulatory compliance annotations for audit traceability
+    compliance.regulated/ncua: "Part 748 - Resilience, availability of critical systems"
+    compliance.regulated/dora: "Article 11 - ICT capacity and performance management"
+    compliance.regulated/soc2: "CC7.1 - System availability and capacity management"
+    compliance.regulated/cis-benchmark: "5.4.1 - Ensure resource limits are set"
+    description: >-
+      Requires all containers to define CPU and memory resource limits.
+      Prevents resource exhaustion and enables capacity management for
+      regulated workloads.
+spec:
+  # ---------------------------------------------------------------------------
+  # Enforcement Action
+  # ---------------------------------------------------------------------------
+  # Set to "deny" for production enforcement.
+  # Change to "dryrun" during initial rollout to identify workloads that
+  # are missing resource limits without disrupting deployments.
+  #
+  # RECOMMENDATION:
+  # Start with "dryrun" since many existing workloads may not have limits.
+  # This is a less immediately dangerous violation than privileged containers,
+  # so a phased rollout is appropriate.
+  # ---------------------------------------------------------------------------
+  enforcementAction: deny
+
+  # ---------------------------------------------------------------------------
+  # Match Configuration
+  # ---------------------------------------------------------------------------
+  match:
+    kinds:
+      # Match Pod resources in the core API group.
+      - apiGroups: [""]
+        kinds: ["Pod"]
+
+    # -------------------------------------------------------------------------
+    # Excluded Namespaces
+    # -------------------------------------------------------------------------
+    # System namespaces are excluded because their resource requirements
+    # are managed by the cloud provider or cluster operator.
+    #
+    # WHY EXCLUDE THESE?
+    #   kube-system:       Managed by AKS/cloud provider with appropriate limits
+    #   gatekeeper-system: Gatekeeper's own resources are set in values.yaml
+    #   falco:             Security agent resource needs are defined in its Helm chart
+    #   trivy-system:      Scanner resource needs are defined in its Helm chart
+    #   kubescape:         Scanner resource needs are defined in its Helm chart
+    # -------------------------------------------------------------------------
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - falco
+      - trivy-system
+      - kubescape
+
+  # ---------------------------------------------------------------------------
+  # Parameters
+  # ---------------------------------------------------------------------------
+  # Specifies which resource types must have limits defined.
+  # Both CPU and memory are required for complete capacity management.
+  # ---------------------------------------------------------------------------
+  parameters:
+    # Require both CPU and memory limits.
+    # Remove "cpu" from this list if you want to start with memory-only
+    # enforcement (memory limits are more critical for stability since
+    # OOMKilled pods cause immediate disruption).
+    requiredLimits:
+      - cpu
+      - memory
+
+    # Exempt images that should not be subject to resource limit checks.
+    exemptImages: []
+    # Example exemptions (uncomment as needed):
+    # - "mcr.microsoft.com/oss/kubernetes/pause:*"

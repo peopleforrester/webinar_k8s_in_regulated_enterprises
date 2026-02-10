@@ -1,0 +1,17 @@
+# ABOUTME: Templated Kubernetes Service for the hello-regulated chart.
+# ABOUTME: Exposes the web application using values-driven port and type configuration.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hello-regulated.fullname" . }}
+  labels:
+    {{- include "hello-regulated.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hello-regulated.selectorLabels" . | nindent 4 }}

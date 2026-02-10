@@ -1,0 +1,106 @@
+# ABOUTME: Constraint that instantiates the K8sDisallowPrivileged ConstraintTemplate.
+# ABOUTME: Enforces the disallow-privileged-containers policy across all namespaces except system namespaces.
+#
+# =============================================================================
+# CONSTRAINT: Disallow Privileged Containers
+# =============================================================================
+# This Constraint instantiates the K8sDisallowPrivileged ConstraintTemplate
+# and configures which resources it applies to and with what parameters.
+#
+# HOW CONSTRAINTS WORK:
+# 1. The ConstraintTemplate (disallow-privileged.yaml) defines the Rego logic
+#    and creates the K8sDisallowPrivileged CRD kind
+# 2. This Constraint resource tells Gatekeeper:
+#    - Which resource types to check (Pods)
+#    - Which namespaces to exclude
+#    - What enforcement action to take (deny, dryrun, warn)
+#    - What parameters to pass to the Rego policy
+#
+# ENFORCEMENT ACTIONS:
+#   deny:   Block the request and return an error (production enforcement)
+#   dryrun: Allow the request but log the violation (testing/rollout)
+#   warn:   Allow the request but return a warning to the user
+#
+# DEPLOYMENT WORKFLOW:
+# 1. Deploy with enforcementAction: dryrun
+# 2. Monitor audit violations (kubectl describe k8sdisallowprivileged ...)
+# 3. Remediate existing violations
+# 4. Switch to enforcementAction: deny
+# =============================================================================
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowPrivileged
+metadata:
+  name: disallow-privileged-containers
+  annotations:
+    # Regulatory compliance annotations for audit traceability
+    compliance.regulated/ncua: "Part 748 - Cybersecurity controls, least privilege"
+    compliance.regulated/dora: "Article 9(4)(c) - Access control minimization"
+    compliance.regulated/pci-dss: "Requirement 2.2 - System hardening"
+    compliance.regulated/soc2: "CC6.1 - Logical access controls"
+    compliance.regulated/cis-benchmark: "5.2.1 - Minimize privileged containers"
+    description: >-
+      Prevents containers from running in privileged mode across all
+      application namespaces. Privileged containers have unrestricted
+      host access and represent a critical security risk.
+spec:
+  # ---------------------------------------------------------------------------
+  # Enforcement Action
+  # ---------------------------------------------------------------------------
+  # Set to "deny" for production enforcement.
+  # Change to "dryrun" during initial rollout to assess impact without
+  # blocking workloads. Audit violations will still be recorded.
+  # ---------------------------------------------------------------------------
+  enforcementAction: deny
+
+  # ---------------------------------------------------------------------------
+  # Match Configuration
+  # ---------------------------------------------------------------------------
+  # Defines which resources this Constraint applies to.
+  # The 'kinds' block specifies API groups and resource kinds.
+  # The 'excludedNamespaces' block exempts specific namespaces.
+  # ---------------------------------------------------------------------------
+  match:
+    kinds:
+      # Match Pod resources in the core API group.
+      # Gatekeeper evaluates Pods directly, including those created by
+      # higher-level controllers (Deployments, StatefulSets, DaemonSets).
+      - apiGroups: [""]
+        kinds: ["Pod"]
+
+    # -------------------------------------------------------------------------
+    # Excluded Namespaces
+    # -------------------------------------------------------------------------
+    # These namespaces are exempt from this specific Constraint.
+    # This is separate from the global exemptNamespaces in values.yaml.
+    #
+    # WHY EXCLUDE THESE?
+    #   kube-system:       Core K8s components (kube-proxy, CNI) may need
+    #                      privileged access for network/node operations
+    #   gatekeeper-system: Prevent Gatekeeper from blocking its own pods
+    #   falco:             Falco kernel module requires privileged access
+    #                      to monitor system calls
+    #   trivy-system:      Trivy node collector may need host access for
+    #                      vulnerability scanning
+    #   kubescape:         Kubescape host scanner needs node-level access
+    # -------------------------------------------------------------------------
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - falco
+      - trivy-system
+      - kubescape
+
+  # ---------------------------------------------------------------------------
+  # Parameters
+  # ---------------------------------------------------------------------------
+  # Values passed to the Rego policy via input.parameters.
+  # These must match the schema defined in the ConstraintTemplate's
+  # spec.crd.spec.validation.openAPIV3Schema.
+  # ---------------------------------------------------------------------------
+  parameters:
+    # Exempt images that legitimately require privileged access.
+    # Use this sparingly and document each exemption.
+    exemptImages: []
+    # Example exemptions (uncomment as needed):
+    # - "mcr.microsoft.com/oss/kubernetes/kube-proxy:*"
+    # - "mcr.microsoft.com/oss/calico/node:*"

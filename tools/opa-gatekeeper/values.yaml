@@ -1,0 +1,231 @@
+# ABOUTME: Helm values for OPA Gatekeeper chart (gatekeeper/gatekeeper).
+# ABOUTME: Configured for regulated-industry AKS clusters with audit, exempt namespaces, and lab-sized resources.
+#
+# =============================================================================
+# OPA GATEKEEPER HELM CHART VALUES
+# =============================================================================
+# Tool:    OPA Gatekeeper - Kubernetes Admission Controller with OPA/Rego
+# Chart:   gatekeeper/gatekeeper
+# Repo:    https://github.com/open-policy-agent/gatekeeper
+# Docs:    https://open-policy-agent.github.io/gatekeeper/website/docs/
+#
+# PURPOSE:
+# OPA Gatekeeper provides policy-as-code for Kubernetes using the Rego
+# language from Open Policy Agent. Policies are defined as ConstraintTemplates
+# (Rego logic) and instantiated as Constraints (parameters + scope).
+#
+# WHY GATEKEEPER FOR REGULATED INDUSTRIES?
+# 1. Azure Policy for AKS is built on Gatekeeper (native AKS integration)
+# 2. Rego enables complex cross-resource policy logic for compliance
+# 3. Audit controller continuously validates existing resources
+# 4. CNCF Graduated project with broad enterprise adoption
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Preventive controls for configuration management"
+#   - DORA Article 9: "Protection against misconfigurations"
+#   - PCI-DSS Req 2.2: "System hardening standards"
+#   - SOC 2 CC6.1: "Logical access controls"
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# REPLICA COUNT
+# -----------------------------------------------------------------------------
+# Gatekeeper webhook replicas. The webhook is in the critical path for all
+# cluster mutations (kubectl apply passes through it).
+#
+# WHY 2 REPLICAS?
+#   - Must survive single node failure without blocking deployments
+#   - Fewer than production (3+) since this is a lab/demo environment
+#   - PodDisruptionBudget should require at least 1 available
+#
+# PRODUCTION CONSIDERATIONS:
+#   - Use 3+ replicas for production clusters
+#   - Enable pod anti-affinity to spread across nodes/zones
+#   - Monitor webhook latency and scale if P99 > 200ms
+# -----------------------------------------------------------------------------
+replicas: 2
+
+# -----------------------------------------------------------------------------
+# AUDIT CONFIGURATION
+# -----------------------------------------------------------------------------
+# The audit controller periodically re-evaluates all resources against
+# Constraints, catching resources created before policies were deployed.
+#
+# HOW IT WORKS:
+# 1. Lists all resources matching Constraint selectors
+# 2. Evaluates each resource against the Constraint's Rego policy
+# 3. Records violations on the Constraint's status.violations field
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Continuous monitoring of security controls"
+# Audit scanning ensures compliance is validated continuously,
+# not just at admission time.
+# -----------------------------------------------------------------------------
+
+# Audit interval in seconds. How often the audit controller re-scans.
+# Lower values = faster detection, higher API server load.
+# 60s is the default and suitable for most environments.
+auditInterval: 60
+
+# Maximum violations stored per Constraint in status.violations.
+# Increase for large clusters with many existing non-compliant resources.
+# Be aware of etcd object size limits (~1.5MB per object).
+constraintViolationsLimit: 20
+
+# Maximum number of audit violations per Constraint to store.
+# This limits the status.violations array on each Constraint CR.
+auditMatchKindOnly: false
+
+# -----------------------------------------------------------------------------
+# LOGGING
+# -----------------------------------------------------------------------------
+# Log verbosity for Gatekeeper pods.
+#
+# LEVELS:
+#   INFO:    Standard operational logging
+#   DEBUG:   Detailed policy evaluation logging (noisy, use for troubleshooting)
+#   WARNING: Reduced logging, only warnings and errors
+#   ERROR:   Minimal logging, only errors
+#
+# RECOMMENDATION:
+# Use INFO for standard operation. Switch to DEBUG temporarily when
+# diagnosing policy evaluation issues.
+# -----------------------------------------------------------------------------
+logLevel: INFO
+
+# -----------------------------------------------------------------------------
+# EXEMPT NAMESPACES
+# -----------------------------------------------------------------------------
+# Namespaces excluded from Gatekeeper webhook enforcement.
+#
+# WHY EXEMPT THESE?
+#   kube-system:       Core K8s components that may legitimately need
+#                      elevated privileges (kube-proxy, coredns, etc.)
+#   gatekeeper-system: Gatekeeper itself -- prevents self-lockout where
+#                      Gatekeeper policies block Gatekeeper's own pods
+#
+# SECURITY IMPLICATION:
+# Resources in exempt namespaces bypass ALL policy checks. Limit
+# exemptions to the minimum set required for cluster operation.
+#
+# ADDITIONAL EXEMPTIONS (add as needed):
+# - Security tool namespaces (falco, trivy-system, kubescape)
+#   may need elevated privileges for their agents
+# -----------------------------------------------------------------------------
+exemptNamespaces:
+  - kube-system
+  - gatekeeper-system
+
+# -----------------------------------------------------------------------------
+# MUTATION (BETA)
+# -----------------------------------------------------------------------------
+# Gatekeeper supports mutating admission via Assign and AssignMetadata CRDs.
+#
+# STATUS: Beta as of Gatekeeper 3.17.x
+#
+# WHAT IT CAN DO:
+#   - Add/modify labels and annotations (AssignMetadata)
+#   - Set default values on resource fields (Assign)
+#   - Inject sidecar configuration
+#
+# WHY DISABLED?
+#   - Beta feature with potential for unexpected behavior
+#   - For stable mutation support, Kyverno is the recommended alternative
+#   - Validation-only is the safest starting point for regulated environments
+#
+# ENABLE WHEN:
+#   - Mutation is GA in Gatekeeper
+#   - You have tested mutation policies thoroughly in a staging environment
+#   - Your organization has accepted the risk of beta admission mutation
+# -----------------------------------------------------------------------------
+enableMutation: false
+
+# -----------------------------------------------------------------------------
+# RESOURCE LIMITS (LAB-SIZED)
+# -----------------------------------------------------------------------------
+# Resource requests and limits for Gatekeeper controller pods.
+#
+# SIZING RATIONALE (lab/demo environment):
+#   requests.cpu: 100m     -- Baseline for policy evaluation
+#   requests.memory: 256Mi -- Holds compiled Rego policies and OPA data store
+#   limits.cpu: 500m       -- Burst capacity for complex evaluations
+#   limits.memory: 512Mi   -- Headroom for referential data caching
+#
+# PRODUCTION SIZING:
+#   requests.cpu: 200m-500m
+#   requests.memory: 512Mi-1Gi
+#   limits.cpu: 1000m
+#   limits.memory: 1Gi-2Gi
+#
+# MONITORING:
+# Watch gatekeeper_request_duration_seconds and OPA memory usage.
+# Increase limits if seeing OOMKilled events or high evaluation latency.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# DISABLED REGO BUILTINS
+# -----------------------------------------------------------------------------
+# Rego built-in functions that are disabled for security.
+#
+# WHY DISABLE http.send?
+# Allowing policies to make external HTTP calls introduces:
+#   - Network dependency in the admission path (latency, availability)
+#   - Potential data exfiltration via policy code
+#   - Non-deterministic policy evaluation (external state changes)
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "ICT systems shall minimize attack surface"
+# Disabling network-capable builtins reduces the risk of policies
+# being used as an attack vector.
+#
+# OTHER BUILTINS TO CONSIDER DISABLING:
+#   - opa.runtime: Exposes runtime information
+#   - rego.parse_module: Could enable dynamic policy loading
+# -----------------------------------------------------------------------------
+disabledBuiltins:
+  - "http.send"
+
+# -----------------------------------------------------------------------------
+# ADMISSION AND AUDIT EVENTS
+# -----------------------------------------------------------------------------
+# Emit Kubernetes events for admission decisions and audit findings.
+#
+# WHY ENABLE?
+#   - Provides visibility into policy enforcement decisions
+#   - Events can be consumed by logging/SIEM pipelines
+#   - Useful for debugging policy behavior
+#
+# REGULATORY CONTEXT (SOC 2 CC7.2):
+# "Monitor system components for anomalies"
+# Admission events create an audit trail of policy enforcement actions.
+#
+# NOTE:
+# Kubernetes events have a default TTL of 1 hour. For long-term retention,
+# forward events to an external logging system.
+# -----------------------------------------------------------------------------
+emitAdmissionEvents: true
+emitAuditEvents: true
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Gatekeeper metrics.
+#
+# KEY METRICS:
+#   gatekeeper_request_duration_seconds:  Webhook request latency
+#   gatekeeper_violations:                Current violation count per Constraint
+#   gatekeeper_constraint_templates:      Number of loaded templates
+#   gatekeeper_constraints:               Number of active Constraints
+#
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false

@@ -1,0 +1,15 @@
+# ABOUTME: ClusterIP service exposing the demo-app deployment within the cluster.
+# ABOUTME: Targets port 80 on pods matching the app: demo-app label selector.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app
+  namespace: demo-app
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-app
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP

@@ -1,0 +1,223 @@
+# ABOUTME: Helm values for standalone Grafana deployment (grafana/grafana chart).
+# ABOUTME: Configures data sources, sidecar dashboard provisioning, and auth settings.
+# =============================================================================
+# GRAFANA HELM CHART VALUES
+# =============================================================================
+# Tool:    Grafana - Observability and Visualization Platform
+# Chart:   grafana/grafana
+# Repo:    https://github.com/grafana/helm-charts
+# Docs:    https://grafana.com/docs/grafana/latest/
+#
+# PURPOSE:
+# Grafana provides dashboarding and visualization for Prometheus metrics,
+# Loki logs, and other data sources. In regulated environments, Grafana
+# dashboards serve as evidence of continuous monitoring controls.
+#
+# DEPLOYMENT OPTIONS:
+# 1. Standalone (this file) - when Prometheus already exists
+# 2. kube-prometheus-stack   - bundled with Prometheus + Alertmanager
+#
+# For option 2, see tools/prometheus/ which includes Grafana as a sub-chart.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ADMIN CREDENTIALS
+# -----------------------------------------------------------------------------
+# Default admin credentials for lab use only.
+#
+# PRODUCTION WARNING:
+# In production, use a Kubernetes Secret to store credentials:
+#   kubectl create secret generic grafana-admin \
+#     --from-literal=admin-user=admin \
+#     --from-literal=admin-password=$(openssl rand -base64 32)
+#
+# Then reference it with:
+#   admin:
+#     existingSecret: grafana-admin
+#     userKey: admin-user
+#     passwordKey: admin-password
+#
+# REGULATORY CONTEXT (PCI-DSS Req 8.2):
+# "Use unique authentication credentials" - never use default passwords
+# in production. Rotate credentials on a defined schedule.
+# -----------------------------------------------------------------------------
+adminUser: admin
+adminPassword: admin
+
+# -----------------------------------------------------------------------------
+# PERSISTENCE
+# -----------------------------------------------------------------------------
+# Enables persistent storage for Grafana's SQLite database, which stores
+# dashboard versions, user preferences, and alert state.
+#
+# SIZING:
+#   1Gi  - Sufficient for lab environments with <50 dashboards
+#   5Gi  - Small production (50-200 dashboards)
+#   10Gi - Large production with many users and annotations
+#
+# REGULATORY CONTEXT (DORA Article 12):
+# "Maintain records of ICT operations" - persistence ensures dashboard
+# history and annotations survive pod restarts.
+# -----------------------------------------------------------------------------
+persistence:
+  enabled: true
+  size: 1Gi
+
+# -----------------------------------------------------------------------------
+# SERVICE CONFIGURATION
+# -----------------------------------------------------------------------------
+# ClusterIP is the secure default. Access Grafana via:
+#   - kubectl port-forward (development/lab)
+#   - Ingress with TLS (production)
+#   - Azure Application Gateway (AKS production)
+#
+# Never expose Grafana without authentication and TLS in regulated
+# environments.
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 80
+
+# -----------------------------------------------------------------------------
+# DATA SOURCES
+# -----------------------------------------------------------------------------
+# Declarative data source provisioning. These are configured at startup
+# and cannot be modified through the UI (ensuring GitOps consistency).
+#
+# The Prometheus URL assumes kube-prometheus-stack is installed in the
+# monitoring namespace with the default release name.
+#
+# ADDING DATA SOURCES:
+# - Loki:  http://loki-gateway.monitoring:80
+# - Tempo: http://tempo-query-frontend.monitoring:3100
+# -----------------------------------------------------------------------------
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      # -----------------------------------------------------------------
+      # Prometheus
+      # -----------------------------------------------------------------
+      # Primary metrics source. Provides PromQL access to all cluster
+      # metrics, including those from Falco, Kyverno, Trivy, and Kubescape.
+      # -----------------------------------------------------------------
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-kube-prometheus-prometheus.monitoring:9090
+        access: proxy
+        isDefault: true
+        editable: false
+
+# -----------------------------------------------------------------------------
+# DASHBOARD SIDECAR
+# -----------------------------------------------------------------------------
+# The sidecar container watches for ConfigMaps with the label
+# grafana_dashboard: "1" and provisions them as Grafana dashboards.
+#
+# HOW IT WORKS:
+# 1. Create a ConfigMap with label grafana_dashboard: "1"
+# 2. The ConfigMap data contains dashboard JSON
+# 3. Sidecar detects the ConfigMap and writes JSON to provisioning dir
+# 4. Grafana loads the dashboard automatically
+#
+# FOLDER SUPPORT:
+# Add annotation grafana_folder: "Security" to organize dashboards
+# into folders within the Grafana UI.
+#
+# SEARCH SCOPE:
+# searchNamespace: ALL watches all namespaces. In multi-tenant clusters,
+# restrict to specific namespaces for isolation.
+# -----------------------------------------------------------------------------
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: ALL
+    folderAnnotation: grafana_folder
+    provider:
+      foldersFromFilesStructure: false
+
+# -----------------------------------------------------------------------------
+# RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Lab-sized resource allocation. Grafana is not resource-intensive for
+# small deployments.
+#
+# SIZING GUIDANCE:
+#   Lab (1-5 users):         200m/256Mi
+#   Small prod (5-20 users): 500m/512Mi
+#   Large prod (20+ users):  1000m/1Gi (consider horizontal scaling)
+#
+# MONITORING:
+# Watch grafana_http_request_duration_seconds for response time trends.
+# Increase resources if P95 exceeds 2 seconds.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# PLUGINS
+# -----------------------------------------------------------------------------
+# Pre-install plugins at startup. Uncomment as needed.
+#
+# COMMON PLUGINS FOR REGULATED ENVIRONMENTS:
+#   grafana-piechart-panel    - Compliance posture pie charts
+#   grafana-worldmap-panel    - Geographic threat visualization
+#   grafana-clock-panel       - UTC clock for audit correlation
+#   marcusolsson-json-datasource - Query JSON APIs (compliance tools)
+# -----------------------------------------------------------------------------
+plugins: []
+  # - grafana-piechart-panel
+  # - grafana-worldmap-panel
+  # - grafana-clock-panel
+  # - marcusolsson-json-datasource
+
+# -----------------------------------------------------------------------------
+# AUTHENTICATION
+# -----------------------------------------------------------------------------
+# Controls how users authenticate to Grafana.
+#
+# ANONYMOUS ACCESS:
+# Disabled by default. In regulated environments, all access must be
+# authenticated and logged for audit trails.
+#
+# BASIC AUTH:
+# Enabled for lab use. Username/password authentication against
+# Grafana's internal user database.
+#
+# OIDC / SSO (PRODUCTION):
+# The commented-out section below shows Azure AD OIDC configuration.
+# SSO provides centralized identity management, MFA enforcement,
+# and session auditing required by most regulatory frameworks.
+#
+# REGULATORY CONTEXT (NCUA Part 748 Appendix A):
+# "Implement access controls including authentication mechanisms"
+# All production Grafana instances must use SSO with MFA.
+# -----------------------------------------------------------------------------
+grafana.ini:
+  auth:
+    disable_login_form: false
+  auth.anonymous:
+    enabled: false
+  auth.basic:
+    enabled: true
+  # ----------------------------------------------------------
+  # OIDC / Azure AD Example (uncomment for production)
+  # ----------------------------------------------------------
+  # auth.generic_oauth:
+  #   enabled: true
+  #   name: Azure AD
+  #   allow_sign_up: true
+  #   client_id: YOUR_CLIENT_ID
+  #   client_secret: YOUR_CLIENT_SECRET
+  #   scopes: openid email profile
+  #   auth_url: https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize
+  #   token_url: https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token
+  #   api_url: https://graph.microsoft.com/oidc/userinfo
+  #   role_attribute_path: contains(groups[*], 'grafana-admins') && 'Admin' || 'Viewer'

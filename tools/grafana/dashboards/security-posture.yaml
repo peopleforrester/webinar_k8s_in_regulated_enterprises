@@ -1,0 +1,231 @@
+# ABOUTME: Grafana dashboard ConfigMap for security posture (Kyverno, Falco, Trivy metrics).
+# ABOUTME: Auto-provisioned by Grafana sidecar when labeled with grafana_dashboard: "1".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-security-posture
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Security"
+data:
+  security-posture.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "description": "Security posture overview: Kyverno policy violations, Falco alerts, Trivy vulnerabilities, and container privilege status",
+      "editable": false,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Kyverno Policy Violations",
+          "description": "Policy evaluation results from Kyverno admission controller and background scans. The 'fail' results represent policy violations that were either blocked (enforce mode) or reported (audit mode).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byRegexp", "options": ".*fail.*" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byRegexp", "options": ".*pass.*" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "expr": "sum by (policy_name, rule_result) (increase(kyverno_policy_results_total[5m]))",
+              "legendFormat": "{{ policy_name }} ({{ rule_result }})",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Falco Alerts by Priority",
+          "description": "Falco security events grouped by rule priority. Critical and high-priority alerts require immediate investigation. Falco exposes these metrics via falcosidekick when configured with Prometheus output.",
+          "type": "barchart",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "critical" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "dark-red", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "high" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "medium" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "low" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+              }
+            ]
+          },
+          "options": {
+            "orientation": "horizontal",
+            "showValue": "always",
+            "stacking": "none"
+          },
+          "targets": [
+            {
+              "expr": "sum by (priority) (falcosidekick_inputs_total)",
+              "legendFormat": "{{ priority }}",
+              "refId": "A",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "Trivy Vulnerability Counts by Severity",
+          "description": "Container image vulnerabilities detected by Trivy Operator, grouped by severity. The trivy-operator exposes these as metrics from VulnerabilityReport CRDs.",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Critical" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "dark-red", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "High" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Medium" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Low" },
+                "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"]
+            },
+            "pieType": "donut",
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "values": ["value"]
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(trivy_image_vulnerabilities{severity=\"Critical\"})",
+              "legendFormat": "Critical",
+              "refId": "A",
+              "instant": true
+            },
+            {
+              "expr": "sum(trivy_image_vulnerabilities{severity=\"High\"})",
+              "legendFormat": "High",
+              "refId": "B",
+              "instant": true
+            },
+            {
+              "expr": "sum(trivy_image_vulnerabilities{severity=\"Medium\"})",
+              "legendFormat": "Medium",
+              "refId": "C",
+              "instant": true
+            },
+            {
+              "expr": "sum(trivy_image_vulnerabilities{severity=\"Low\"})",
+              "legendFormat": "Low",
+              "refId": "D",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "Container Privilege Status",
+          "description": "Counts of containers running as privileged vs non-privileged across the cluster. Privileged containers have unrestricted host access and represent a security risk in regulated environments.",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Non-Privileged" },
+                "properties": [
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"]
+            },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_container_info{container!=\"\"}) - count(kube_pod_container_status_running{container!=\"\"} * on(namespace, pod, container) kube_pod_container_info{container!=\"\"}  * on(namespace, pod) group_left kube_pod_spec_containers_security_context_privileged{container!=\"\"} == 1) or vector(0)",
+              "legendFormat": "Non-Privileged",
+              "refId": "A",
+              "instant": true
+            },
+            {
+              "expr": "count(kube_pod_spec_containers_security_context_privileged{container!=\"\"} == 1) or vector(0)",
+              "legendFormat": "Privileged",
+              "refId": "B",
+              "instant": true
+            }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["kubernetes", "security", "compliance", "regulated"],
+      "templating": {
+        "list": [
+          {
+            "name": "DS_PROMETHEUS",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "selected": true, "text": "Prometheus", "value": "Prometheus" }
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "Security Posture",
+      "uid": "security-posture-aks-regulated"
+    }
