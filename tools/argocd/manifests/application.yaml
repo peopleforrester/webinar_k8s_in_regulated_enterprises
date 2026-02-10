@@ -111,7 +111,7 @@ spec:
     # Can be HTTPS or SSH. For private repos, configure credentials
     # in Argo CD settings (see values.yaml configs.repositories).
     # -------------------------------------------------------------------------
-    repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+    repoURL: https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
 
     # -------------------------------------------------------------------------
     # Target Revision

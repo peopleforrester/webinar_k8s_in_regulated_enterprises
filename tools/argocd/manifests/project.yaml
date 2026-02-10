@@ -95,7 +95,7 @@ spec:
   # Source restrictions guarantee only reviewed, approved code is deployed.
   # ===========================================================================
   sourceRepos:
-    - https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+    - https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
 
   # ===========================================================================
   # DESTINATION RESTRICTIONS

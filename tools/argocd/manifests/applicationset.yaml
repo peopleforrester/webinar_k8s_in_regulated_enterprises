@@ -94,7 +94,7 @@ spec:
     # -------------------------------------------------------------------------
     - git:
         # The Git repository to scan for directories
-        repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+        repoURL: https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
 
         # The branch/tag/commit to scan
         revision: HEAD
@@ -155,7 +155,7 @@ spec:
       # {{path}} is the full path (e.g., "workloads/compliant-app").
       # -----------------------------------------------------------------------
       source:
-        repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+        repoURL: https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
         targetRevision: HEAD
         path: "{{path}}"
 

@@ -212,7 +212,7 @@ kubectl get vulnerabilityreports -n compliant-app
 4. Clone the repo and try it yourself
 
 ```
-github.com/peopleforrester/aks-for-regulated-enterprises
+github.com/peopleforrester/webinar_k8s_in_regulated_enterprises
 ```
 
 ## After the Webinar

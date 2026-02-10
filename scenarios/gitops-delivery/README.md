@@ -170,7 +170,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/peopleforrester/aks-for-regulated-enterprises.git
+    repoURL: https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
     targetRevision: main
     path: tools/kustomize/overlays/production
   destination:

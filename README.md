@@ -8,8 +8,8 @@ A take-home reference with runnable Helm values, Kubernetes manifests, and educa
 
 ```bash
 # 1. Clone
-git clone https://github.com/peopleforrester/aks-for-regulated-enterprises.git
-cd aks-for-regulated-enterprises
+git clone https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git
+cd webinar_k8s_in_regulated_enterprises
 
 # 2. Deploy an AKS cluster (~10 min)
 ./scripts/setup-cluster.sh
@@ -155,7 +155,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a tool to this repository.
 
 ## Webinar
 
-Watch the full webinar: [Link to recording]
+Watch the full webinar: *Link coming soon*
 
 ## License
 

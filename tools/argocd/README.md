@@ -124,7 +124,7 @@ kubectl apply -f manifests/application.yaml
 
 # Or create via CLI
 argocd app create compliant-app \
-  --repo https://github.com/peopleforrester/aks-for-regulated-enterprises.git \
+  --repo https://github.com/peopleforrester/webinar_k8s_in_regulated_enterprises.git \
   --path workloads/compliant-app \
   --dest-server https://kubernetes.default.svc \
   --dest-namespace compliant-app
