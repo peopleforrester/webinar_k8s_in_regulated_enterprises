@@ -102,6 +102,68 @@ progress() {
     echo -e "${YELLOW}[${CURRENT_STEP}/${TOTAL_STEPS}] (${PCT}%) $1${NC}"
 }
 
+# Track installation failures
+INSTALL_FAILURES=()
+
+# ----------------------------------------------------------------------------
+# HEALTH CHECK FUNCTION
+# ----------------------------------------------------------------------------
+# Verifies pods in a namespace are running after Helm install.
+# Waits up to 60s for pods to stabilize, then reports status.
+# If pods are in CrashLoopBackOff or Error, prints logs and flags failure.
+# ----------------------------------------------------------------------------
+verify_install() {
+    local namespace="$1"
+    local tool_name="$2"
+    local max_wait=60
+    local elapsed=0
+
+    echo -e "  Verifying ${tool_name} pods..."
+
+    # Wait for pods to exist
+    while [[ $(kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | wc -l) -eq 0 ]] && [[ $elapsed -lt 15 ]]; do
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    # Wait for pods to stabilize
+    elapsed=0
+    while [[ $elapsed -lt $max_wait ]]; do
+        local crash_pods=$(kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | grep -E "CrashLoopBackOff|Error|ImagePullBackOff" | wc -l)
+        local not_ready=$(kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l)
+
+        if [[ $crash_pods -gt 0 ]]; then
+            echo -e "${RED}  FAILED: ${tool_name} has pods in error state!${NC}"
+            echo ""
+            kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | grep -E "CrashLoopBackOff|Error|ImagePullBackOff" | while read -r line; do
+                local pod_name=$(echo "$line" | awk '{print $1}')
+                echo -e "${RED}  Pod: ${pod_name}${NC}"
+                echo -e "${RED}  Status: $(echo "$line" | awk '{print $3}')${NC}"
+                echo -e "${RED}  Logs (last 5 lines):${NC}"
+                kubectl logs -n "${namespace}" "${pod_name}" --tail=5 2>&1 | sed 's/^/    /'
+                echo ""
+            done
+            INSTALL_FAILURES+=("${tool_name}")
+            return 1
+        fi
+
+        if [[ $not_ready -eq 0 ]]; then
+            local total=$(kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | wc -l)
+            local running=$(kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | grep -c "Running" || true)
+            echo -e "${GREEN}  ${tool_name}: ${running}/${total} pods running${NC}"
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    echo -e "${RED}  WARNING: ${tool_name} pods not fully ready after ${max_wait}s${NC}"
+    kubectl get pods -n "${namespace}" --no-headers 2>/dev/null | sed 's/^/    /'
+    INSTALL_FAILURES+=("${tool_name}")
+    return 1
+}
+
 # Script header
 echo -e "${BOLD}========================================${NC}"
 echo -e "${BOLD}  Installing Security Tools${NC}"
@@ -195,7 +257,7 @@ helm upgrade --install falco falcosecurity/falco \
     --create-namespace \
     -f "${SECURITY_TOOLS_DIR}/falco/values.yaml" \
     --wait --timeout 5m
-echo -e "${GREEN}  Falco installed${NC}"
+verify_install "falco" "Falco" || true
 echo ""
 
 # ============================================================================
@@ -227,7 +289,7 @@ helm upgrade --install falcosidekick falcosecurity/falcosidekick \
     --namespace falco \
     -f "${SECURITY_TOOLS_DIR}/falcosidekick/values.yaml" \
     --wait --timeout 3m
-echo -e "${GREEN}  Falcosidekick installed${NC}"
+verify_install "falco" "Falcosidekick" || true
 echo ""
 
 # ============================================================================
@@ -266,7 +328,7 @@ helm upgrade --install kyverno kyverno/kyverno \
     --create-namespace \
     -f "${SECURITY_TOOLS_DIR}/kyverno/values.yaml" \
     --wait --timeout 5m
-echo -e "${GREEN}  Kyverno installed${NC}"
+verify_install "kyverno" "Kyverno" || true
 echo ""
 
 # ============================================================================
@@ -302,7 +364,7 @@ helm upgrade --install trivy-operator aqua/trivy-operator \
     --create-namespace \
     -f "${SECURITY_TOOLS_DIR}/trivy/values.yaml" \
     --wait --timeout 5m
-echo -e "${GREEN}  Trivy Operator installed${NC}"
+verify_install "trivy-system" "Trivy Operator" || true
 echo ""
 
 # ============================================================================
@@ -341,7 +403,7 @@ helm upgrade --install kubescape kubescape/kubescape-operator \
     --create-namespace \
     -f "${SECURITY_TOOLS_DIR}/kubescape/values.yaml" \
     --wait --timeout 5m
-echo -e "${GREEN}  Kubescape installed${NC}"
+verify_install "kubescape" "Kubescape" || true
 echo ""
 
 # ============================================================================
@@ -357,19 +419,43 @@ echo ""
 # that needs investigation (check pod events with kubectl describe).
 # ============================================================================
 echo -e "${BOLD}========================================${NC}"
-echo -e "${GREEN}  All security tools installed (100%)${NC}"
+echo -e "${BOLD}  Installation Summary${NC}"
 echo -e "${BOLD}========================================${NC}"
-echo ""
-echo "Verifying installations:"
 echo ""
 
 # Check pod status in each security namespace
 for NS in falco kyverno trivy-system kubescape; do
     PODS=$(kubectl get pods -n "${NS}" --no-headers 2>/dev/null | wc -l)
-    READY=$(kubectl get pods -n "${NS}" --no-headers 2>/dev/null | grep -c "Running" || true)
-    echo "  ${NS}: ${READY}/${PODS} pods running"
+    RUNNING=$(kubectl get pods -n "${NS}" --no-headers 2>/dev/null | grep -c "Running" || true)
+    FAILED=$(kubectl get pods -n "${NS}" --no-headers 2>/dev/null | grep -cE "CrashLoopBackOff|Error|ImagePullBackOff" || true)
+    if [[ $FAILED -gt 0 ]]; then
+        echo -e "  ${RED}FAIL  ${NS}: ${RUNNING}/${PODS} running, ${FAILED} failed${NC}"
+    elif [[ $PODS -eq 0 ]]; then
+        echo -e "  ${RED}FAIL  ${NS}: no pods found${NC}"
+    else
+        echo -e "  ${GREEN}OK    ${NS}: ${RUNNING}/${PODS} pods running${NC}"
+    fi
 done
 
 echo ""
-echo "Next step: Deploy demo workloads or run the demo"
-echo "  ./run-demo.sh"
+
+# Report overall status
+if [[ ${#INSTALL_FAILURES[@]} -gt 0 ]]; then
+    echo -e "${RED}========================================${NC}"
+    echo -e "${RED}  INSTALLATION INCOMPLETE${NC}"
+    echo -e "${RED}  Failed: ${INSTALL_FAILURES[*]}${NC}"
+    echo -e "${RED}========================================${NC}"
+    echo ""
+    echo "Troubleshooting:"
+    echo "  Check pod logs:  kubectl logs -n <namespace> <pod-name>"
+    echo "  Check events:    kubectl get events -n <namespace> --sort-by=.lastTimestamp"
+    echo "  See:             docs/TROUBLESHOOTING.md"
+    exit 1
+else
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}  All security tools installed (100%)${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo "Next step: Deploy demo workloads or run the demo"
+    echo "  ./run-demo.sh"
+fi

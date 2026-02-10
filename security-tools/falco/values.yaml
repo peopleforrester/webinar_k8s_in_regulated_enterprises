@@ -169,7 +169,7 @@ falco:
   #   - Cryptocurrency mining detection
   #   - Data exfiltration patterns
   # ---------------------------------------------------------------------------
-  rules_file:
+  rules_files:
     - /etc/falco/falco_rules.yaml
     - /etc/falco/falco_rules.local.yaml
     - /etc/falco/rules.d
@@ -331,5 +331,7 @@ resources:
 # "Detection capabilities shall be tested regularly"
 # Prometheus metrics enable continuous validation that detection is working.
 # -----------------------------------------------------------------------------
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
 serviceMonitor:
-  enabled: true
+  enabled: false

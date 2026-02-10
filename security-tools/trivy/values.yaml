@@ -396,42 +396,16 @@ compliance:
 # -----------------------------------------------------------------------------
 # PROMETHEUS SERVICE MONITOR
 # -----------------------------------------------------------------------------
-# Enables Prometheus to scrape Trivy Operator metrics.
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
 #
-# KEY METRICS:
+# KEY METRICS (when enabled):
 #   trivy_image_vulnerabilities:           CVEs by severity
 #   trivy_image_vulnerability_id:          Specific CVE details
-#   trivy_configaudit_info:                Config audit results
-#   trivy_sbom_info:                       SBOM generation status
 #   trivy_vulnerability_database_updated:  DB freshness
-#
-# ALERTING RECOMMENDATIONS:
-#
-# P1 (Critical - Immediate Response):
-#   - New CRITICAL CVE in production namespace
-#   - Exposed secrets detected
-#   - Vulnerability database >24 hours stale
-#
-# P2 (High - Same Day):
-#   - New HIGH CVE detected
-#   - Failed scan jobs
-#   - CIS compliance degradation
-#
-# P3 (Medium - This Week):
-#   - New MEDIUM CVE detected
-#   - Config audit failures increasing
-#   - SBOM generation failures
-#
-# COMPLIANCE DASHBOARD:
-# Consider using Trivy Operator Dashboard or integrating with
-# Policy Reporter for unified compliance visualization.
-#
-# REGULATORY CONTEXT (DORA Article 10):
-# "Continuous monitoring of security controls"
-# Metrics enable real-time visibility into security posture.
 # -----------------------------------------------------------------------------
 serviceMonitor:
-  enabled: true
+  enabled: false
 
 # -----------------------------------------------------------------------------
 # NODE COLLECTOR CONFIGURATION

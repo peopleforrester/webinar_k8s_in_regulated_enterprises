@@ -230,32 +230,22 @@ config:
     - system:serviceaccounts:kyverno
 
   # ---------------------------------------------------------------------------
-  # Webhook Configuration
+  # Webhook Namespace Selector
   # ---------------------------------------------------------------------------
-  # Fine-tune which resources trigger Kyverno webhooks.
-  #
-  # objectSelector:
-  #   Filters which objects are sent to Kyverno for evaluation.
-  #   Use to reduce webhook traffic for known-good resource types.
-  #
-  # CURRENT SETTING:
-  # Exclude Helm-managed resources from webhook (they're validated by Helm).
-  #
-  # CAUTION:
-  # This exclusion assumes Helm charts are trusted. Remove if you need
-  # to validate Helm-deployed resources.
+  # Controls which namespaces trigger Kyverno webhooks.
+  # kube-system is excluded to prevent bootstrap issues and reduce load.
   #
   # REGULATORY CONTEXT (DORA Article 9):
-  # All infrastructure changes should be validated. Consider removing
-  # this exclusion in strict regulatory environments.
+  # All infrastructure changes should be validated. In strict regulatory
+  # environments, consider narrowing exclusions further.
   # ---------------------------------------------------------------------------
   webhooks:
-    - objectSelector:
-        matchExpressions:
-          - key: "app.kubernetes.io/managed-by"
-            operator: NotIn
-            values:
-              - Helm
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
 
 # -----------------------------------------------------------------------------
 # FEATURE FLAGS
@@ -407,9 +397,8 @@ metricsConfig:
 # - Kyverno provides Grafana dashboards at https://kyverno.io/docs/monitoring/
 # - Consider Kyverno Policy Reporter for dedicated compliance UI
 #
-# REGULATORY CONTEXT (DORA Article 10):
-# "Monitor effectiveness of ICT controls"
-# Metrics enable continuous policy effectiveness monitoring.
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
 # -----------------------------------------------------------------------------
 serviceMonitor:
-  enabled: true
+  enabled: false
