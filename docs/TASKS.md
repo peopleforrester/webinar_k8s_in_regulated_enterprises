@@ -29,12 +29,12 @@
 - [x] GitOps scenario content (`9221260`)
 
 ## Phase 4: Tier 3 Tools
-- [~] Crossplane - README, values, manifests (written, uncommitted)
-- [~] Harbor - README, values, manifests (written, uncommitted)
-- [~] Karpenter - README, values, manifests (written, uncommitted)
-- [~] Longhorn - README, values, manifests (written, uncommitted)
-- [ ] Commit Tier 3 content
-- [ ] Push all local commits to origin/staging
+- [x] Crossplane - README, values, manifests (`76bd654`)
+- [x] Harbor - README, values, manifests (`76bd654`)
+- [x] Karpenter - README, values, manifests (`76bd654`)
+- [x] Longhorn - README, values, manifests (`76bd654`)
+- [x] Commit Tier 3 content (`76bd654`)
+- [x] Push all local commits to origin/staging (6 commits pushed)
 
 ## Phase 5: Validation & Push
 - [ ] Validate all YAML with yamllint
