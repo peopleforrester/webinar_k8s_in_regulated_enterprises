@@ -2,23 +2,43 @@
 
 Exact commands and talking points for the 20-minute live demo.
 
-## Pre-Demo Reset
+## Two Ways to Run the Demo
 
-If you ran `full-demo-test.sh` earlier to validate, reset the cluster for a fresh demo:
+| Method | Command | Best for |
+|--------|---------|----------|
+| **Automated** | `./scripts/run-demo.sh` | Guided walkthrough with pauses for talking points |
+| **Manual** | Follow the commands below | Full control over pacing and command order |
+
+The automated script (`run-demo.sh`) handles deploying the vulnerable app, running attacks, applying policies, and scanning — all with interactive pauses. If you prefer to type commands live, follow the manual steps below.
+
+## Setup (Before the Webinar)
+
+Run these steps **30 minutes before** the webinar starts:
 
 ```bash
-# Removes workloads + policies, redeploys vulnerable app, leaves tools running
-./scripts/cleanup.sh --reset-demo
-```
+# 1. Deploy AKS cluster + install security tools (~15 min)
+./scripts/full-demo-test.sh
 
-This gives you a clean starting point: vulnerable app running, Falco watching, no Kyverno policies active.
+# 2. Reset to a clean demo state (~2 min)
+#    This removes policies/workloads from the test run,
+#    then redeploys the vulnerable app so the demo starts fresh
+./scripts/cleanup.sh --reset-demo
+
+# 3. Verify everything is ready
+kubectl get nodes                              # Cluster is up
+kubectl get pods -n falco                      # Falco is watching
+kubectl get pods -n kyverno                    # Kyverno engine is running (no policies active)
+kubectl get pods -n vulnerable-app             # Vulnerable app is running
+kubectl get clusterpolicies                    # Should return "No resources found"
+```
 
 ## Pre-Demo Checklist
 
-- [ ] AKS cluster deployed and `kubectl` configured
-- [ ] All security tools installed (`./scripts/install-security-tools.sh`)
+- [ ] AKS cluster deployed and `kubectl get nodes` shows Ready
+- [ ] Security tools installed (Falco, Kyverno engine, Kubescape, Trivy)
 - [ ] Demo reset completed (`./scripts/cleanup.sh --reset-demo`)
-- [ ] Vulnerable app deployed (before Kyverno policies)
+- [ ] Vulnerable app running (`kubectl get pods -n vulnerable-app`)
+- [ ] No Kyverno policies active (`kubectl get clusterpolicies` returns empty)
 - [ ] Two terminal windows open (one for commands, one for Falco logs)
 - [ ] KubeHound running (if using attack path visualization)
 
@@ -186,11 +206,18 @@ kubectl get vulnerabilityreports -n compliant-app
 ## Closing (30 seconds)
 
 **Key messages:**
-1. All 5 tools are CNCF open source projects
+1. All 6 tools are CNCF/open source projects
 2. Everything you saw deploys in 15 minutes from this repo
 3. The demo maps to real regulatory frameworks (NCUA, OSFI, DORA)
 4. Clone the repo and try it yourself
 
 ```
-github.com/kodekloud/nfcu-aks-regulated-demo
+github.com/peopleforrester/aks-for-regulated-enterprises
+```
+
+## After the Webinar
+
+```bash
+# Destroy everything to stop costs
+./scripts/cleanup.sh --full --destroy
 ```
