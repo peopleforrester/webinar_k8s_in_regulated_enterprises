@@ -1,0 +1,43 @@
+# ABOUTME: Template values.yaml showing the standard structure for tool configurations.
+# ABOUTME: Copy this file when adding a new tool and customize for that tool's Helm chart.
+
+# =============================================================================
+# [Tool Name] - Helm Values
+# =============================================================================
+# Chart: [chart-repo/chart-name]
+# Version: [chart version]
+# Docs: [link to chart docs]
+#
+# These values are tuned for the AKS regulated enterprise lab environment.
+# For production deployments, review each section carefully.
+# =============================================================================
+
+# -- Number of replicas for high availability
+# In production, set to 2+ for fault tolerance
+replicaCount: 1
+
+# -- Resource requests and limits
+# Sized for the lab environment; increase for production workloads
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Service monitor for Prometheus integration
+# Requires prometheus-operator / kube-prometheus-stack
+# Enable when Prometheus is installed in the cluster
+serviceMonitor:
+  enabled: false
+
+# -- Node selector for scheduling constraints
+# Use this to target specific node pools (e.g., system vs user)
+nodeSelector: {}
+
+# -- Tolerations for tainted nodes
+tolerations: []
+
+# -- Pod affinity rules
+affinity: {}

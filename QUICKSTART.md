@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Deploy a fully secured AKS cluster with the complete CNCF security stack in 15 minutes.
+Deploy an AKS lab cluster, then pick any tool from the [Tool Catalog](README.md#tool-catalog) and follow its README.
 
 ## Prerequisites
 
@@ -8,50 +8,13 @@ Deploy a fully secured AKS cluster with the complete CNCF security stack in 15 m
 - Terraform >= 1.6.0
 - kubectl >= 1.30
 - Helm >= 3.14
-- Docker (for KubeHound)
+- Docker (optional, for KubeHound)
 
-## What Gets Deployed
+## Two Paths
 
-| Component | Version | Description |
-|-----------|---------|-------------|
-| AKS | Kubernetes 1.34 | With Cilium, AzureLinux, Image Cleaner |
-| Falco | 0.43.0 | Runtime detection (modern_ebpf) |
-| Falco Talon | 0.3.0 | Automated threat response |
-| Kyverno | 1.17.0 | Policy enforcement (VAP enabled) |
-| Kubescape | 4.0.0 | Compliance scanning (CIS-v1.12.0) |
-| Trivy | 0.29.0 | Vulnerability scanning |
-| KubeHound | 1.6.7 | Attack path analysis |
+**Path A — Pick a tool:** Deploy the AKS cluster (Step 1), then `cd tools/<tool-name>` and follow that tool's README.
 
-## Automated Full Test (Recommended)
-
-Run the complete end-to-end test with a single command:
-
-```bash
-# Full test: deploy infra + install tools + run demo + validate
-./scripts/full-demo-test.sh
-
-# Skip infrastructure (use existing cluster)
-./scripts/full-demo-test.sh --skip-infra
-
-# Quick validation of existing setup
-./scripts/quick-validate.sh
-
-# Cleanup only
-./scripts/full-demo-test.sh --cleanup-only
-```
-
-**What `full-demo-test.sh` does:**
-1. Checks prerequisites (az, terraform, kubectl, helm, kubescape, trivy)
-2. Deploys AKS infrastructure via Terraform
-3. Installs Kyverno, Falco, and Kubescape
-4. Deploys compliant app, tests that vulnerable app is blocked
-5. Runs attack simulation to generate Falco alerts
-6. Runs Kubescape and Trivy compliance scans
-7. Displays validation summary
-8. Optionally cleans up infrastructure
-
-**Estimated time:** 15-20 minutes
-**Estimated cost:** ~$10-15 for a 1-hour test
+**Path B — Run the security scenario:** Deploy the cluster (Step 1), install the security tools (Step 2), deploy workloads (Step 3), and run the Attack → Detect → Prevent → Prove demo (Step 4).
 
 ---
 
@@ -113,7 +76,7 @@ kubectl apply -f workloads/compliant-app/
 
 ```bash
 # Run the interactive demo script
-./scripts/run-demo.sh
+./scenarios/attack-detect-prevent/run-demo.sh
 ```
 
 ### Or run individual components:
