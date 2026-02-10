@@ -140,43 +140,57 @@ spec:
                 - kubescape
       validate:
         message: >-
-          Using the ':latest' image tag or no tag is not allowed.
-          Regulatory requirement: Change management controls require
-          explicit, immutable image versions. Specify an explicit
-          image tag (e.g., nginx:1.25.4).
+          Container images must include an explicit tag (e.g., nginx:1.25.4).
+          Images without a tag default to ':latest' which is mutable and
+          violates change management controls.
         # ---------------------------------------------------------------------
-        # TWO-PART VALIDATION EXPLAINED:
-        # ---------------------------------------------------------------------
-        # This rule uses BOTH a pattern AND a deny condition because we need
-        # to check two different failure modes:
-        #
-        # Part 1 - Pattern: Check that ANY tag is present
-        #   "*:*" means "any image name" : "any tag"
-        #   This catches: nginx (no colon, no tag) -- BLOCKED
-        #   This passes: nginx:latest (has colon and tag)
-        #   This passes: nginx:1.25 (has colon and tag)
-        #
-        # Part 2 - Deny: Check that tag is not "latest"
-        #   This catches: nginx:latest -- BLOCKED
-        #   This passes: nginx:1.25 -- allowed
+        # Pattern checks that a tag is present after the colon.
+        # An image without a tag (e.g., just "nginx") will fail this.
         # ---------------------------------------------------------------------
         pattern:
           spec:
             containers:
-              # This pattern requires a colon followed by something
-              # An image without a tag (e.g., just "nginx") will fail this
               - image: "*:*"
+
+    # =========================================================================
+    # RULE 2: Deny ':latest' Tag on Containers
+    # =========================================================================
+    - name: deny-latest-tag-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-node-lease
+                - kube-public
+                - kyverno
+                - falco
+                - trivy-system
+                - kubescape
+      validate:
+        message: >-
+          Using the ':latest' image tag is not allowed.
+          Regulatory requirement: Change management controls require
+          explicit, immutable image versions. Specify an explicit
+          image tag (e.g., nginx:1.25.4).
+        # ---------------------------------------------------------------------
+        # Deny condition checks if any container uses ':latest' tag.
+        # ---------------------------------------------------------------------
         deny:
           conditions:
             any:
-              # JMESPath expression to check if any container uses ':latest'
               - key: "{{ request.object.spec.containers[].image }}"
                 operator: AnyIn
                 value:
                   - "*:latest"
 
     # =========================================================================
-    # RULE 2: Validate Init Container Image Tags
+    # RULE 3: Validate Init Container Image Tags
     # =========================================================================
     - name: validate-image-tag-init-containers
       match:

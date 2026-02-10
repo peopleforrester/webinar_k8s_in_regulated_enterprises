@@ -78,10 +78,15 @@ wait_for_pods() {
             return 1
         fi
 
-        local not_ready=$(kubectl get pods -n "$namespace" --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l || echo "0")
+        local not_ready
+        not_ready=$(kubectl get pods -n "$namespace" --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+        not_ready=$(echo "$not_ready" | tr -d '[:space:]')
+        not_ready=${not_ready:-0}
 
         if [ "$not_ready" -eq 0 ]; then
-            local total=$(kubectl get pods -n "$namespace" --no-headers 2>/dev/null | wc -l || echo "0")
+            local total
+            total=$(kubectl get pods -n "$namespace" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+            total=${total:-0}
             if [ "$total" -gt 0 ]; then
                 success "All $total pods ready in $namespace"
                 return 0
@@ -193,7 +198,7 @@ install_security_tools() {
     info "Installing Kyverno 1.17.0..."
     helm upgrade --install kyverno kyverno/kyverno \
         --namespace kyverno --create-namespace \
-        --version 3.3.0 \
+        --version 3.7.0 \
         -f "$REPO_ROOT/security-tools/kyverno/values.yaml" \
         --wait --timeout 5m
     success "Kyverno installed"
@@ -202,7 +207,7 @@ install_security_tools() {
 
     # Apply Kyverno policies
     info "Applying Kyverno policies..."
-    kubectl apply -f "$REPO_ROOT/security-tools/kyverno/policies/"
+    kubectl apply -k "$REPO_ROOT/security-tools/kyverno/policies/"
     success "Kyverno policies applied"
 
     # Verify policies
@@ -218,10 +223,8 @@ install_security_tools() {
 
     wait_for_pods "falco" 300
 
-    # Apply custom Falco rules
-    info "Applying custom Falco rules..."
-    kubectl apply -f "$REPO_ROOT/security-tools/falco/custom-rules.yaml"
-    success "Custom Falco rules applied"
+    # Note: Custom Falco rules are loaded via customRules in values.yaml
+    info "Falco custom rules loaded via Helm values (customRules section)"
 
     # Install Kubescape Operator
     info "Installing Kubescape 4.0.0..."
@@ -232,6 +235,16 @@ install_security_tools() {
     success "Kubescape installed"
 
     wait_for_pods "kubescape" 300
+
+    # Install Trivy Operator
+    info "Installing Trivy Operator 0.29.0..."
+    helm upgrade --install trivy-operator aqua/trivy-operator \
+        --namespace trivy-system --create-namespace \
+        -f "$REPO_ROOT/security-tools/trivy/values.yaml" \
+        --wait --timeout 5m
+    success "Trivy Operator installed"
+
+    wait_for_pods "trivy-system" 300
 
     echo ""
 }

@@ -305,7 +305,7 @@ features:
   # - Complex conditions may not translate
   # ---------------------------------------------------------------------------
   validatingAdmissionPolicyReports:
-    enabled: true
+    enabled: false
 
 # -----------------------------------------------------------------------------
 # AUTO-GENERATION SETTINGS
@@ -336,7 +336,7 @@ autogen:
   # VAP reduces webhook dependency, improving control resilience.
   # ---------------------------------------------------------------------------
   validatingAdmissionPolicy:
-    enabled: true
+    enabled: false
 
 # -----------------------------------------------------------------------------
 # SERVER-SIDE APPLY
