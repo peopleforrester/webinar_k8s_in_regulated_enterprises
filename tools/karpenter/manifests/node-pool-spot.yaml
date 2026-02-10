@@ -1,0 +1,387 @@
+# ABOUTME: Karpenter NodePool for cost-optimized spot VM workloads on AKS.
+# ABOUTME: Tainted to prevent regulated workloads; demonstrates FinOps cost optimization.
+# =============================================================================
+# KARPENTER NODE POOL - COST-OPTIMIZED (SPOT VMs)
+# =============================================================================
+#
+# PURPOSE:
+# This NodePool provisions Azure Spot VMs for non-sensitive workloads that can
+# tolerate interruption. Spot VMs cost 60-90% less than on-demand, providing
+# significant cost savings for workloads such as:
+#   - Development and testing environments
+#   - Batch processing and ETL jobs
+#   - CI/CD build agents
+#   - Non-critical background tasks
+#   - Load testing and performance benchmarking
+#
+# WHAT ARE SPOT VMs?
+# Azure Spot VMs use surplus Azure capacity at a steep discount. The trade-off
+# is that Azure can evict (terminate) a Spot VM at any time when it needs the
+# capacity back. Eviction notice is 30 seconds via the IMDS endpoint.
+#
+# WHY A SEPARATE NODEPOOL FOR SPOT?
+# Mixing spot and on-demand in a single NodePool is technically possible via
+# multiple capacity type requirements. However, separating them provides:
+#   1. Clear audit trail: regulated workloads are never on spot
+#   2. Independent scaling limits: cap spot spend separately
+#   3. Different disruption settings: spot pools tolerate aggressive consolidation
+#   4. Taint-based isolation: regulated pods cannot accidentally land on spot nodes
+#
+# FINOPS ALIGNMENT:
+# The FinOps Foundation defines three phases: Inform, Optimize, Operate.
+# This NodePool supports the Optimize phase by:
+#   - Using spot pricing for eligible workloads
+#   - Right-sizing nodes to match actual demand
+#   - Consolidating underutilized nodes aggressively
+#   - Providing cost allocation tags for Inform-phase reporting
+#
+# REGULATORY CONTEXT:
+# While spot VMs themselves are not a regulatory requirement, demonstrating
+# cost-conscious infrastructure management supports:
+#   - NCUA: Fiduciary duty to manage member resources efficiently
+#   - DORA Art.11: ICT resource management and capacity planning
+#   - SOC 2: CC3.4 Risk mitigation through cost-appropriate architecture
+# =============================================================================
+
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: cost-optimized
+  labels:
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: cost-optimization
+    finops/strategy: spot-instances
+spec:
+  # ---------------------------------------------------------------------------
+  # TEMPLATE
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        # ---------------------------------------------------------------------
+        # NODE LABELS
+        # These labels identify spot nodes for scheduling, cost tracking, and
+        # monitoring dashboards.
+        # ---------------------------------------------------------------------
+        workload-tier: non-regulated
+        capacity-type: spot
+        node-lifecycle: karpenter
+        finops/cost-profile: optimized
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: cost-optimized-nodes
+
+      # -----------------------------------------------------------------------
+      # TAINTS
+      # -----------------------------------------------------------------------
+      # Taints REPEL pods that do not have a matching toleration. By tainting
+      # spot nodes, we ensure that only workloads that explicitly opt-in to
+      # spot will be scheduled here.
+      #
+      # HOW TAINTS AND TOLERATIONS WORK:
+      #   1. A taint is applied to a node: key=value:Effect
+      #   2. A pod must have a matching toleration to be scheduled on that node
+      #   3. Pods without the toleration are repelled (not scheduled)
+      #
+      # EFFECTS:
+      #   NoSchedule:     Pods without toleration cannot be scheduled
+      #   PreferNoSchedule: Scheduler avoids the node but can use it as last resort
+      #   NoExecute:      Existing pods without toleration are evicted
+      #
+      # WHY NoSchedule (NOT NoExecute)?
+      # NoSchedule prevents new regulated pods from landing on spot nodes.
+      # We avoid NoExecute because if a pod is already running during a
+      # controller update that adds the taint, we do not want to disrupt it.
+      #
+      # CRITICAL FOR REGULATED ENVIRONMENTS:
+      # This taint is the enforcement mechanism that keeps regulated workloads
+      # off spot VMs. Regulated pods MUST NOT include a toleration for this
+      # taint. Audit your Deployment manifests to verify.
+      # -----------------------------------------------------------------------
+      taints:
+        - key: karpenter.azure.com/capacity-type
+          value: spot
+          effect: NoSchedule
+
+      # -----------------------------------------------------------------------
+      # REQUIREMENTS
+      # -----------------------------------------------------------------------
+      requirements:
+        # ---------------------------------------------------------------------
+        # CAPACITY TYPE: SPOT ONLY
+        # ---------------------------------------------------------------------
+        # This NodePool exclusively provisions spot instances. On-demand
+        # fallback is handled by the regulated-workloads NodePool -- if a pod
+        # cannot tolerate spot, it will not match this NodePool and will be
+        # scheduled by the regulated-workloads pool instead.
+        #
+        # SPOT PRICING DYNAMICS:
+        # Spot prices vary by:
+        #   - VM SKU (popular sizes have less surplus capacity)
+        #   - Region (less popular regions have more surplus)
+        #   - Time of day (business hours in the region's timezone)
+        #   - Season (end of quarter, holiday periods)
+        #
+        # Karpenter does NOT bid on spot pricing. Azure Spot VMs use a
+        # fixed discount model -- you pay the current spot price, and the VM
+        # is evicted when Azure needs the capacity, regardless of price.
+        # ---------------------------------------------------------------------
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - spot
+
+        # ---------------------------------------------------------------------
+        # INSTANCE FAMILIES: BROADER SET FOR COST OPTIMIZATION
+        # ---------------------------------------------------------------------
+        # For spot workloads, we allow a wider range of instance families to
+        # maximize the chance of finding available spot capacity.
+        #
+        # INCLUDED FAMILIES:
+        #   D-series: General purpose (balanced CPU/memory)
+        #   E-series: Memory optimized (high memory per vCPU)
+        #   F-series: Compute optimized (high CPU per memory)
+        #
+        # WHY INCLUDE F-SERIES FOR SPOT?
+        # F-series provides the best CPU performance per dollar for compute-
+        # bound workloads like CI/CD builds and batch processing. We exclude
+        # it from the regulated pool (consistency concerns) but allow it for
+        # spot (cost optimization is the priority).
+        #
+        # MORE FAMILIES = BETTER SPOT AVAILABILITY:
+        # Spot capacity varies by SKU. By allowing more instance families,
+        # Karpenter has more options when one family has no spot capacity.
+        # This reduces the chance of pods remaining unschedulable.
+        # ---------------------------------------------------------------------
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values:
+            - "D"
+            - "E"
+            - "F"
+
+        # ---------------------------------------------------------------------
+        # INSTANCE SIZES: 2 to 16 vCPUs
+        # ---------------------------------------------------------------------
+        # Same size range as regulated pool. Smaller VMs have better spot
+        # availability because they use less capacity from Azure's surplus.
+        # ---------------------------------------------------------------------
+        - key: karpenter.azure.com/sku-cpu
+          operator: In
+          values:
+            - "2"
+            - "4"
+            - "8"
+            - "16"
+
+        # ---------------------------------------------------------------------
+        # ARCHITECTURE: AMD64
+        # ---------------------------------------------------------------------
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
+
+        # ---------------------------------------------------------------------
+        # AVAILABILITY ZONES: ALL THREE
+        # ---------------------------------------------------------------------
+        # Spreading spot workloads across all zones maximizes availability.
+        # If zone 1 has no spot capacity, zones 2 and 3 may still have it.
+        # ---------------------------------------------------------------------
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - "eastus-1"
+            - "eastus-2"
+            - "eastus-3"
+
+  # ---------------------------------------------------------------------------
+  # RESOURCE LIMITS
+  # ---------------------------------------------------------------------------
+  # Lower limits than the regulated pool because spot workloads are
+  # discretionary and should not consume unbounded capacity.
+  #
+  # SIZING RATIONALE:
+  #   50 CPU = ~12 D4s_v5 nodes
+  #   200Gi memory = matches D-series ratio
+  #
+  # COST CAP:
+  # At spot pricing (~$0.04/hr for D4s_v5), 50 CPUs costs ~$50/hr or
+  # ~$1,200/day. This is roughly 10% of the regulated pool's maximum cost,
+  # reflecting the secondary priority of spot workloads.
+  #
+  # FINOPS NOTE:
+  # Review these limits monthly. If spot workloads consistently hit the cap,
+  # consider raising limits or moving stable workloads to on-demand.
+  # ---------------------------------------------------------------------------
+  limits:
+    cpu: "50"
+    memory: 200Gi
+
+  # ---------------------------------------------------------------------------
+  # DISRUPTION POLICY
+  # ---------------------------------------------------------------------------
+  # Spot nodes use more aggressive disruption settings because:
+  #   1. Workloads already tolerate interruption (they opted into spot)
+  #   2. Aggressive consolidation maximizes spot cost savings
+  #   3. Shorter node lifetimes reduce the window for spot eviction surprises
+  # ---------------------------------------------------------------------------
+  disruption:
+    # -------------------------------------------------------------------------
+    # CONSOLIDATION POLICY
+    # -------------------------------------------------------------------------
+    # Same policy as regulated, but with a shorter consolidation delay (below).
+    # Underutilized spot nodes are expensive waste -- they still consume spot
+    # capacity that could be reclaimed by Azure.
+    # -------------------------------------------------------------------------
+    consolidationPolicy: WhenEmptyOrUnderutilized
+
+    # -------------------------------------------------------------------------
+    # CONSOLIDATE AFTER
+    # -------------------------------------------------------------------------
+    # Only 5 minutes for spot nodes (vs. 30 minutes for regulated).
+    #
+    # WHY MORE AGGRESSIVE?
+    # Spot workloads already tolerate disruption. Waiting 30 minutes to
+    # consolidate an underutilized spot node wastes money. 5 minutes is
+    # enough to allow rolling updates to settle without leaving idle capacity.
+    # -------------------------------------------------------------------------
+    consolidateAfter: 5m
+
+    # -------------------------------------------------------------------------
+    # EXPIRE AFTER (NODE TTL)
+    # -------------------------------------------------------------------------
+    # 168h = 7 DAYS for spot nodes (vs. 30 days for regulated).
+    #
+    # WHY SHORTER TTL?
+    # 1. Spot nodes may accumulate stale state faster (varied workloads)
+    # 2. Shorter TTL means more frequent image refreshes
+    # 3. Azure may pre-emptively evict long-running spot VMs anyway
+    # 4. Weekly rotation keeps nodes fresh without excessive churn
+    # -------------------------------------------------------------------------
+    expireAfter: 168h
+
+    # -------------------------------------------------------------------------
+    # DISRUPTION BUDGETS
+    # -------------------------------------------------------------------------
+    # More permissive budgets for spot because workloads tolerate disruption.
+    #
+    # 20% allows faster consolidation and rotation. With 12 spot nodes,
+    # up to 2 can be disrupted simultaneously.
+    #
+    # No business-hours restriction: spot workloads are non-critical and
+    # can be disrupted at any time. If a spot workload needs business-hours
+    # protection, it should be on the regulated pool instead.
+    # -------------------------------------------------------------------------
+    budgets:
+      - nodes: "20%"
+
+  # ---------------------------------------------------------------------------
+  # WEIGHT
+  # ---------------------------------------------------------------------------
+  # NodePool weight determines scheduling preference when a pod matches
+  # multiple NodePools. Higher weight = preferred.
+  #
+  # WEIGHT STRATEGY:
+  #   regulated-workloads: 50 (default, no weight set = 50)
+  #   cost-optimized:      10 (lower priority)
+  #
+  # HOW IT WORKS:
+  # When a pod with a spot toleration matches BOTH NodePools, Karpenter
+  # prefers the one with higher weight. By giving cost-optimized a weight
+  # of 10, pods that match both pools land on the regulated pool by default.
+  # Only pods that EXCLUSIVELY match the cost-optimized pool (via node
+  # selectors or affinity for spot labels) will use spot nodes.
+  #
+  # This prevents accidental spot placement for pods that happen to have
+  # a broad toleration but should still prefer on-demand.
+  # ---------------------------------------------------------------------------
+  weight: 10
+
+---
+
+# =============================================================================
+# AKS NODE CLASS - COST-OPTIMIZED NODES
+# =============================================================================
+#
+# Separate AKSNodeClass for spot nodes. The primary differences from the
+# regulated AKSNodeClass are:
+#   - Smaller OS disk (less cost for ephemeral workloads)
+#   - Different tags (cost tracking for spot vs. on-demand)
+#   - Same OS image family (AzureLinux for consistency)
+# =============================================================================
+
+apiVersion: karpenter.azure.com/v1alpha2
+kind: AKSNodeClass
+metadata:
+  name: cost-optimized-nodes
+  labels:
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: cost-optimization
+    finops/strategy: spot-instances
+spec:
+  # ---------------------------------------------------------------------------
+  # OS IMAGE
+  # ---------------------------------------------------------------------------
+  # Same AzureLinux image as regulated nodes for consistency. Using the same
+  # OS family simplifies operations -- one set of scripts, one set of
+  # monitoring agents, one set of hardening baselines.
+  # ---------------------------------------------------------------------------
+  imageFamily: AzureLinux
+
+  # ---------------------------------------------------------------------------
+  # OS DISK SIZE
+  # ---------------------------------------------------------------------------
+  # Smaller disk for spot nodes because:
+  #   1. Spot workloads are typically stateless (no persistent data on node)
+  #   2. Smaller disk = lower cost (~$0.002/GiB/hr for Premium SSD)
+  #   3. Spot nodes are short-lived; they do not accumulate large image caches
+  #
+  # 64 GiB provides enough space for:
+  #   - OS and system packages (~8 GiB)
+  #   - Container images (~20-30 GiB for typical workloads)
+  #   - Kubelet working space and logs (~10 GiB)
+  #   - Buffer (~15 GiB)
+  # ---------------------------------------------------------------------------
+  osDiskSizeGB: 64
+
+  # ---------------------------------------------------------------------------
+  # TAGS
+  # ---------------------------------------------------------------------------
+  # Tags differ from regulated nodes to enable separate cost tracking.
+  # Azure Cost Management can filter by these tags to produce split reports:
+  #   - "How much are we spending on spot vs. on-demand?"
+  #   - "What percentage of our compute is cost-optimized?"
+  #   - "Which teams are using spot effectively?"
+  # ---------------------------------------------------------------------------
+  tags:
+    environment: production
+    managed-by: karpenter
+    workload-tier: non-regulated
+    cost-center: platform-infrastructure
+    capacity-type: spot
+    finops-strategy: spot-optimization
+
+  # ---------------------------------------------------------------------------
+  # KUBELET CONFIGURATION
+  # ---------------------------------------------------------------------------
+  kubelet:
+    # -------------------------------------------------------------------------
+    # MAX PODS
+    # -------------------------------------------------------------------------
+    # Same as regulated pool. Consistency in pod density simplifies capacity
+    # planning and subnet IP allocation.
+    # -------------------------------------------------------------------------
+    maxPods: 50
+
+    # -------------------------------------------------------------------------
+    # SYSTEM RESERVED
+    # -------------------------------------------------------------------------
+    # Same reservation as regulated nodes. System daemons need the same
+    # resources regardless of whether the node is spot or on-demand.
+    # -------------------------------------------------------------------------
+    systemReserved:
+      cpu: 100m
+      memory: 256Mi

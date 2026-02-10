@@ -1,0 +1,219 @@
+# ABOUTME: Example Crossplane Claim for a regulated PostgreSQL database.
+# ABOUTME: Demonstrates developer self-service with automatic compliance controls.
+# =============================================================================
+# REGULATED DATABASE CLAIM - DEVELOPER SELF-SERVICE EXAMPLE
+# =============================================================================
+# This is what a developer actually creates to get a database. Notice how
+# simple it is compared to the Composition that implements it.
+#
+# THE ABSTRACTION IN ACTION:
+#   Developer specifies:        Platform automatically enforces:
+#   ┌─────────────────┐         ┌──────────────────────────────┐
+#   │ - region         │         │ - TLS 1.2 enforcement        │
+#   │ - size (small)   │  ───▶   │ - Geo-redundant backup       │
+#   │ - storage (64GB) │         │ - Private endpoint (no pub)  │
+#   │ - PG version 16  │         │ - 35-day backup retention    │
+#   └─────────────────┘         │ - Audit logging enabled      │
+#                                │ - Dedicated subnet           │
+#                                │ - Private DNS zone           │
+#                                │ - Resource group isolation   │
+#                                └──────────────────────────────┘
+#
+# The developer cannot disable encryption, skip backups, or expose the
+# database publicly. Compliance is the DEFAULT, not an afterthought.
+#
+# HOW CLAIMS WORK:
+# 1. Developer applies this Claim to their namespace
+# 2. Crossplane creates a Composite Resource (XR) from the Claim
+# 3. The Composition expands the XR into Managed Resources
+# 4. Providers reconcile each Managed Resource against Azure
+# 5. Connection details appear in a Secret in the developer's namespace
+# 6. The developer mounts the Secret in their application pod
+#
+# NAMESPACE SCOPING:
+# Claims are namespace-scoped, meaning:
+#   - Team A's claims are in namespace "team-a"
+#   - Team B's claims are in namespace "team-b"
+#   - Neither team can see the other's claims or connection secrets
+#   - Kubernetes RBAC controls who can create claims in which namespace
+#
+# REGULATORY CONTEXT:
+#   - SOC 2 CC6.1: Namespace isolation enforces least-privilege access
+#   - NCUA Part 748: Self-service with guardrails reduces human error
+#   - DORA Article 9: Infrastructure changes follow approved patterns
+#   - PCI-DSS Req 7.1: Access limited to need-to-know
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CLAIM: Team Alpha's Application Database
+# -----------------------------------------------------------------------------
+# This example represents a development team requesting a database for
+# their application. They specify only what varies between databases;
+# the Composition handles everything else.
+#
+# LIFECYCLE:
+#   Create: kubectl apply -f claim.yaml
+#   Status: kubectl get regulateddatabaseclaim team-alpha-db -n team-alpha
+#   Delete: kubectl delete regulateddatabaseclaim team-alpha-db -n team-alpha
+#           (Crossplane deletes ALL associated Azure resources automatically)
+#
+# CONNECTION SECRET:
+#   After provisioning completes (typically 5-10 minutes for PostgreSQL),
+#   a Secret named "team-alpha-db-connection" appears in the claim's
+#   namespace containing:
+#     - host: The database FQDN
+#     - port: 5432
+#     - username: The admin username
+#     - password: The admin password
+#     - sslmode: require
+#
+#   Application pods mount this Secret as environment variables:
+#     env:
+#       - name: DATABASE_HOST
+#         valueFrom:
+#           secretKeyRef:
+#             name: team-alpha-db-connection
+#             key: host
+# -----------------------------------------------------------------------------
+---
+apiVersion: platform.example.com/v1alpha1
+kind: RegulatedDatabaseClaim
+metadata:
+  name: team-alpha-db
+  # Namespace scoping: this claim exists in the team's namespace.
+  # The team needs RBAC permission to create RegulatedDatabaseClaim
+  # resources in their namespace.
+  namespace: team-alpha
+  labels:
+    app.kubernetes.io/name: team-alpha-app
+    app.kubernetes.io/part-of: team-alpha
+    app.kubernetes.io/managed-by: crossplane
+  annotations:
+    # Annotations for operational context
+    platform.example.com/owner: "team-alpha"
+    platform.example.com/cost-center: "engineering"
+    platform.example.com/environment: "development"
+spec:
+  parameters:
+    # -----------------------------------------------------------------------
+    # REGION
+    # -----------------------------------------------------------------------
+    # Azure region for the database. Must be one of the approved regions
+    # defined in the XRD schema.
+    #
+    # Choose a region that:
+    #   1. Is approved for your data classification
+    #   2. Is close to your AKS cluster (low latency)
+    #   3. Has an Azure paired region for geo-redundant backup
+    # -----------------------------------------------------------------------
+    region: eastus2
+
+    # -----------------------------------------------------------------------
+    # SIZE
+    # -----------------------------------------------------------------------
+    # T-shirt size mapping:
+    #   small:  B_Standard_B2s  (2 vCores, 8 GB RAM)  - dev/test
+    #   medium: GP_Standard_D4s (4 vCores, 16 GB RAM)  - staging
+    #   large:  GP_Standard_D8s (8 vCores, 32 GB RAM)  - production
+    #
+    # The platform team controls the exact SKU mapping in the Composition.
+    # If cost or performance characteristics change, the Composition is
+    # updated once and all Claims automatically reflect the change on
+    # the next reconciliation cycle.
+    # -----------------------------------------------------------------------
+    size: small
+
+    # -----------------------------------------------------------------------
+    # STORAGE SIZE
+    # -----------------------------------------------------------------------
+    # Storage in GB. Azure PostgreSQL Flexible Server supports 32 GB to
+    # 16 TB. Storage auto-grow is handled by Azure when the server
+    # approaches capacity.
+    #
+    # SIZING GUIDANCE:
+    #   - 32-64 GB: Development and testing
+    #   - 128-512 GB: Small production workloads
+    #   - 1024+ GB: Large production with audit logging
+    #
+    # NOTE: Azure does not support shrinking storage. Choose a reasonable
+    # starting size; you can always increase later.
+    # -----------------------------------------------------------------------
+    storageSizeGb: 64
+
+    # -----------------------------------------------------------------------
+    # POSTGRESQL VERSION
+    # -----------------------------------------------------------------------
+    # Major PostgreSQL version. Only supported versions are available in
+    # the XRD schema. End-of-life versions are removed to ensure all
+    # databases receive security patches.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 6.2):
+    # "Install applicable vendor-supplied security patches within one
+    # month of release." Using supported versions ensures patches are
+    # available.
+    # -----------------------------------------------------------------------
+    postgresVersion: "16"
+
+  # -------------------------------------------------------------------------
+  # CONNECTION SECRET
+  # -------------------------------------------------------------------------
+  # writeConnectionSecretToRef tells Crossplane where to write the
+  # connection details (host, port, username, password, sslmode) so
+  # the developer's application pods can consume them.
+  #
+  # The Secret is created in the SAME namespace as the Claim, ensuring
+  # namespace isolation. Other namespaces cannot access this Secret
+  # without explicit cross-namespace RBAC (which should not be granted).
+  #
+  # REGULATORY CONTEXT (PCI-DSS Req 3.4):
+  # "Render PAN unreadable anywhere it is stored." While this is about
+  # PANs specifically, the principle extends to all sensitive data.
+  # Connection secrets are stored as Kubernetes Secrets (encrypted at
+  # rest if etcd encryption is enabled on the AKS cluster).
+  # -------------------------------------------------------------------------
+  writeConnectionSecretToRef:
+    name: team-alpha-db-connection
+
+# =============================================================================
+# USAGE EXAMPLE
+# =============================================================================
+# After the Claim is provisioned, an application Deployment would
+# reference the connection Secret like this:
+#
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: team-alpha-app
+#   namespace: team-alpha
+# spec:
+#   template:
+#     spec:
+#       containers:
+#         - name: app
+#           env:
+#             - name: DATABASE_HOST
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: team-alpha-db-connection
+#                   key: host
+#             - name: DATABASE_PORT
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: team-alpha-db-connection
+#                   key: port
+#             - name: DATABASE_USER
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: team-alpha-db-connection
+#                   key: username
+#             - name: DATABASE_PASSWORD
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: team-alpha-db-connection
+#                   key: password
+#             - name: DATABASE_SSLMODE
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: team-alpha-db-connection
+#                   key: sslmode
+# =============================================================================

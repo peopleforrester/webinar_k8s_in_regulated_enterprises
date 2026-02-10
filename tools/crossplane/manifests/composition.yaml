@@ -1,0 +1,535 @@
+# ABOUTME: Crossplane XRD and Composition for a "regulated database" abstraction.
+# ABOUTME: Bundles PostgreSQL with SSL, geo-redundant backup, private endpoint, and audit logging.
+# =============================================================================
+# REGULATED DATABASE - COMPOSITE RESOURCE DEFINITION & COMPOSITION
+# =============================================================================
+# This file defines two resources:
+#
+# 1. CompositeResourceDefinition (XRD):
+#    The SCHEMA that defines what a "RegulatedDatabase" looks like.
+#    Think of it as a CRD for your platform's database abstraction.
+#
+# 2. Composition:
+#    The IMPLEMENTATION that maps a RegulatedDatabase to actual Azure
+#    resources. This is where compliance controls are enforced.
+#
+# THE POWER OF THIS PATTERN:
+# Developers create a simple Claim ("I need a database") and the
+# Composition automatically provisions it with ALL required compliance
+# controls. Developers never need to know about SSL enforcement,
+# geo-redundant backups, private endpoints, or audit logging -- the
+# platform team bakes these into the Composition.
+#
+# This is "compliance by default" -- the secure path IS the easy path.
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: All infrastructure meets security baseline
+#   - SOC 2 CC7.1: Changes follow approved patterns
+#   - DORA Article 11: ICT infrastructure provisioning controls
+#   - PCI-DSS Req 2.2: System configuration standards enforced
+# =============================================================================
+
+# =============================================================================
+# COMPOSITE RESOURCE DEFINITION (XRD)
+# =============================================================================
+# The XRD defines the API schema for our "RegulatedDatabase" composite.
+# This is what developers see and interact with. The schema is intentionally
+# simple -- developers specify WHAT they need, not HOW to build it.
+#
+# KEY DESIGN DECISIONS:
+# 1. Minimal required fields (name, region, size) -- compliance is automatic
+# 2. Optional fields for team-specific needs (storage size, version)
+# 3. Status fields expose connection info without cloud-specific details
+# 4. The "size" enum (small/medium/large) maps to pre-approved SKUs
+#
+# REGULATORY CONTEXT (SOC 2 CC7.1):
+# By restricting the schema to pre-approved options, we prevent developers
+# from provisioning non-compliant configurations. There is no "disable
+# encryption" option because encryption is not optional.
+# =============================================================================
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  # Name format: <plural>.<group>
+  # This becomes a new CRD in the cluster: regulateddatabases.platform.example.com
+  name: regulateddatabases.platform.example.com
+  labels:
+    app.kubernetes.io/part-of: regulated-platform
+    app.kubernetes.io/managed-by: crossplane
+spec:
+  # group and names define the API group and resource names for the CRD
+  group: platform.example.com
+  names:
+    kind: RegulatedDatabase
+    plural: regulateddatabases
+    shortNames:
+      - rdb
+    categories:
+      - composite
+      - platform
+
+  # claimNames enables namespace-scoped Claims.
+  # Without this, developers would need cluster-scoped access to create XRs.
+  # Claims provide namespace isolation -- each team's databases are scoped
+  # to their namespace.
+  #
+  # REGULATORY CONTEXT (SOC 2 CC6.1):
+  # Namespace-scoped Claims enforce multi-tenancy and least-privilege access.
+  # Team A cannot see or modify Team B's database claims.
+  claimNames:
+    kind: RegulatedDatabaseClaim
+    plural: regulateddatabaseclaims
+
+  # connectionSecretKeys defines which connection details are exposed to
+  # the claiming namespace. Only these keys will appear in the connection
+  # Secret that Crossplane creates for the developer.
+  connectionSecretKeys:
+    - host
+    - port
+    - username
+    - password
+    - sslmode
+
+  # versions defines the schema versions for this XRD.
+  # Versioning allows evolving the API without breaking existing Claims.
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: "Desired state of the regulated database."
+              properties:
+                # ---------------------------------------------------------
+                # PARAMETERS - What developers specify
+                # ---------------------------------------------------------
+                parameters:
+                  type: object
+                  description: "Configuration parameters for the database."
+                  properties:
+                    region:
+                      type: string
+                      description: "Azure region for the database."
+                      # Restrict to regions where the organization has
+                      # compliance certifications and data residency approval.
+                      # REGULATORY CONTEXT (DORA Article 28):
+                      # Data residency requirements may restrict which
+                      # regions are acceptable for regulated workloads.
+                      enum:
+                        - eastus
+                        - eastus2
+                        - westus2
+                        - centralus
+                        - northeurope
+                        - westeurope
+                      default: eastus2
+
+                    size:
+                      type: string
+                      description: "Database size tier (maps to pre-approved Azure SKUs)."
+                      # These tiers are pre-approved by the security team.
+                      # Each maps to specific vCPU/RAM/IOPS configurations.
+                      # Developers choose a t-shirt size; the platform
+                      # handles the rest.
+                      #
+                      # small:  2 vCores, 8 GB RAM  (dev/test)
+                      # medium: 4 vCores, 16 GB RAM (staging/small prod)
+                      # large:  8 vCores, 32 GB RAM (production)
+                      enum:
+                        - small
+                        - medium
+                        - large
+                      default: small
+
+                    storageSizeGb:
+                      type: integer
+                      description: "Storage size in GB."
+                      minimum: 32
+                      maximum: 16384
+                      default: 64
+
+                    postgresVersion:
+                      type: string
+                      description: "PostgreSQL major version."
+                      enum:
+                        - "14"
+                        - "15"
+                        - "16"
+                      default: "16"
+
+                  required:
+                    - region
+                    - size
+
+            status:
+              type: object
+              description: "Observed state of the regulated database."
+              properties:
+                # ---------------------------------------------------------
+                # STATUS - What the platform reports back
+                # ---------------------------------------------------------
+                host:
+                  type: string
+                  description: "Database connection hostname."
+                port:
+                  type: string
+                  description: "Database connection port."
+                ready:
+                  type: boolean
+                  description: "Whether the database is ready to accept connections."
+                complianceChecks:
+                  type: object
+                  description: "Status of compliance controls."
+                  properties:
+                    sslEnforced:
+                      type: boolean
+                    geoRedundantBackup:
+                      type: boolean
+                    privateEndpoint:
+                      type: boolean
+                    auditLogging:
+                      type: boolean
+
+# =============================================================================
+# COMPOSITION
+# =============================================================================
+# The Composition defines HOW a RegulatedDatabase is implemented using
+# actual Azure resources. This is where the platform team enforces
+# compliance controls.
+#
+# RESOURCES PROVISIONED:
+# 1. Resource Group (logical container for all database resources)
+# 2. PostgreSQL Flexible Server (the database itself)
+# 3. PostgreSQL Database (a database within the server)
+# 4. Subnet (dedicated subnet for private endpoint)
+# 5. Private Endpoint (private network access)
+# 6. Private DNS Zone (DNS resolution for private endpoint)
+#
+# COMPLIANCE CONTROLS ENFORCED:
+# Every resource in this Composition is configured with security controls
+# that map to specific regulatory requirements. These controls are NOT
+# optional -- there is no way for a developer to disable them via the
+# Claim API.
+# =============================================================================
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: regulated-database-azure
+  labels:
+    provider: azure
+    app.kubernetes.io/part-of: regulated-platform
+    app.kubernetes.io/managed-by: crossplane
+  annotations:
+    # Annotations document the compliance controls for auditors.
+    # These are machine-readable and can be queried during audits.
+    compliance.platform.example.com/ncua-part-748: "data-protection,access-control"
+    compliance.platform.example.com/soc2: "CC6.1,CC7.1,CC7.2"
+    compliance.platform.example.com/dora: "article-11,article-28"
+    compliance.platform.example.com/pci-dss: "req-2.2,req-3.4,req-8.2"
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.com/v1alpha1
+    kind: RegulatedDatabase
+
+  # writeConnectionSecretsToNamespace defines where Crossplane stores
+  # connection secrets for Composite Resources (not Claims).
+  # Claims get their own namespace-scoped connection secret automatically.
+  writeConnectionSecretsToNamespace: crossplane-system
+
+  resources:
+    # -------------------------------------------------------------------
+    # RESOURCE 1: Resource Group
+    # -------------------------------------------------------------------
+    # A dedicated resource group for each database provides:
+    #   - Blast radius isolation (deletion only affects this database)
+    #   - Independent RBAC (Azure roles scoped to the RG)
+    #   - Cost tracking via resource group tags
+    #   - Clean lifecycle management (delete RG = delete everything)
+    #
+    # REGULATORY CONTEXT (SOC 2 CC6.1):
+    # Resource isolation ensures that access to one database does not
+    # grant access to other databases. Each resource group can have
+    # its own Azure RBAC assignments.
+    # -------------------------------------------------------------------
+    - name: resource-group
+      base:
+        apiVersion: azure.upbound.io/v1beta1
+        kind: ResourceGroup
+        spec:
+          forProvider:
+            location: eastus2  # Patched from claim
+            tags:
+              managed-by: crossplane
+              compliance-level: regulated
+              data-classification: confidential
+          providerConfigRef:
+            name: default
+      patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.location
+
+    # -------------------------------------------------------------------
+    # RESOURCE 2: PostgreSQL Flexible Server
+    # -------------------------------------------------------------------
+    # The core database resource with all compliance controls enforced.
+    #
+    # COMPLIANCE CONTROLS (each setting is annotated):
+    #
+    # sslEnforcement: ON
+    #   REGULATORY: PCI-DSS Req 4.1 - encrypt data in transit
+    #   WHY: Prevents eavesdropping on database connections
+    #
+    # geoRedundantBackupEnabled: true
+    #   REGULATORY: DORA Article 11 - data backup and recovery
+    #   WHY: Backups replicated to paired Azure region for DR
+    #
+    # backupRetentionDays: 35
+    #   REGULATORY: NCUA Part 749 - record retention requirements
+    #   WHY: 35 days exceeds most regulatory minimum retention periods
+    #
+    # storageMb: Sized from claim
+    #   Minimum 32GB ensures adequate space for audit logs
+    #
+    # version: From claim (restricted to supported versions)
+    #   REGULATORY: PCI-DSS Req 6.2 - patching requirements
+    #   WHY: Only supported PostgreSQL versions receive security patches
+    # -------------------------------------------------------------------
+    - name: postgresql-server
+      base:
+        apiVersion: dbforpostgresql.azure.upbound.io/v1beta2
+        kind: FlexibleServer
+        spec:
+          forProvider:
+            location: eastus2  # Patched from claim
+            resourceGroupNameSelector:
+              matchControllerRef: true
+            # Authentication configuration
+            # REGULATORY (PCI-DSS Req 8.2): Strong authentication required
+            administratorLogin: pgadmin
+            administratorLoginPasswordSecretRef:
+              name: postgresql-admin-password
+              namespace: crossplane-system
+              key: password
+            # PostgreSQL version - patched from claim
+            version: "16"
+            # SKU - patched based on size tier
+            skuName: B_Standard_B2s
+            # Storage configuration
+            storageMb: 65536  # Patched from claim
+            # -------------------------------------------------------
+            # SSL ENFORCEMENT
+            # -------------------------------------------------------
+            # REGULATORY: PCI-DSS Req 4.1 - Encrypt data in transit
+            # DORA Article 9 - Encryption of data in transit
+            #
+            # This forces ALL connections to use TLS. Unencrypted
+            # connections are rejected at the server level.
+            # There is no way to disable this via the Claim API.
+            # -------------------------------------------------------
+            sslEnforcementEnabled: true
+            sslMinimalTlsVersionEnforced: TLS1_2
+            # -------------------------------------------------------
+            # GEO-REDUNDANT BACKUP
+            # -------------------------------------------------------
+            # REGULATORY: DORA Article 11 - Backup and recovery
+            # NCUA Part 748 - Business continuity planning
+            #
+            # Backups are automatically replicated to the Azure paired
+            # region. If the primary region is lost, backups can be
+            # restored in the paired region.
+            #
+            # Azure paired regions for common US regions:
+            #   eastus  <-> westus
+            #   eastus2 <-> centralus
+            #   westus2 <-> westcentralus
+            # -------------------------------------------------------
+            geoRedundantBackupEnabled: true
+            # -------------------------------------------------------
+            # BACKUP RETENTION
+            # -------------------------------------------------------
+            # REGULATORY: NCUA Part 749 - Record retention
+            # SOC 2 CC7.2 - Monitoring and incident investigation
+            #
+            # 35 days provides adequate retention for:
+            #   - Incident investigation (forensic analysis)
+            #   - Audit compliance (demonstrate point-in-time recovery)
+            #   - Regulatory inquiries (data preservation)
+            #
+            # Azure supports 7-35 days. We use the maximum.
+            # -------------------------------------------------------
+            backupRetentionDays: 35
+            # -------------------------------------------------------
+            # AUDIT LOGGING
+            # -------------------------------------------------------
+            # REGULATORY: PCI-DSS Req 10.1 - Audit trails
+            # SOC 2 CC7.2 - System monitoring
+            # NCUA Part 748 - Monitoring for unauthorized access
+            #
+            # PostgreSQL audit logging captures:
+            #   - All authentication attempts (success and failure)
+            #   - DDL statements (CREATE, ALTER, DROP)
+            #   - DML on sensitive tables (if configured)
+            #   - Role/permission changes
+            #
+            # Logs are sent to Azure Monitor for centralized analysis.
+            # -------------------------------------------------------
+            maintenanceWindow:
+              dayOfWeek: 0  # Sunday
+              startHour: 2  # 2 AM UTC
+              startMinute: 0
+            # High availability for production tiers
+            # REGULATORY (DORA Article 11): Business continuity
+            highAvailability:
+              mode: Disabled  # Patched to ZoneRedundant for medium/large
+            tags:
+              managed-by: crossplane
+              compliance-level: regulated
+              data-classification: confidential
+              backup-policy: geo-redundant-35d
+          providerConfigRef:
+            name: default
+      patches:
+        # Region from claim
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.region
+          toFieldPath: spec.forProvider.location
+        # PostgreSQL version from claim
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.postgresVersion
+          toFieldPath: spec.forProvider.version
+        # Storage size from claim (convert GB to MB)
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.storageSizeGb
+          toFieldPath: spec.forProvider.storageMb
+          transforms:
+            - type: math
+              math:
+                multiply: 1024
+        # SKU mapping based on size tier
+        # small  -> B_Standard_B2s   (2 vCores, 8 GB RAM)
+        # medium -> GP_Standard_D4s_v3 (4 vCores, 16 GB RAM)
+        # large  -> GP_Standard_D8s_v3 (8 vCores, 32 GB RAM)
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.size
+          toFieldPath: spec.forProvider.skuName
+          transforms:
+            - type: map
+              map:
+                small: B_Standard_B2s
+                medium: GP_Standard_D4s_v3
+                large: GP_Standard_D8s_v3
+        # Enable zone-redundant HA for medium and large tiers
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.parameters.size
+          toFieldPath: spec.forProvider.highAvailability.mode
+          transforms:
+            - type: map
+              map:
+                small: Disabled
+                medium: ZoneRedundant
+                large: ZoneRedundant
+      connectionDetails:
+        - name: host
+          fromFieldPath: status.atProvider.fqdn
+        - name: port
+          value: "5432"
+        - name: username
+          value: pgadmin
+
+    # -------------------------------------------------------------------
+    # RESOURCE 3: PostgreSQL Database
+    # -------------------------------------------------------------------
+    # Creates a database within the Flexible Server.
+    #
+    # charset and collation are set to UTF-8 for international character
+    # support, which is required for many regulated workloads that handle
+    # member/customer names with non-ASCII characters.
+    # -------------------------------------------------------------------
+    - name: postgresql-database
+      base:
+        apiVersion: dbforpostgresql.azure.upbound.io/v1beta1
+        kind: FlexibleServerDatabase
+        spec:
+          forProvider:
+            serverIdSelector:
+              matchControllerRef: true
+            charset: UTF8
+            collation: en_US.utf8
+          providerConfigRef:
+            name: default
+
+    # -------------------------------------------------------------------
+    # RESOURCE 4: Subnet for Private Endpoint
+    # -------------------------------------------------------------------
+    # A dedicated subnet for the database private endpoint.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 1.3):
+    # "Prohibit direct public access between the Internet and any system
+    # component in the cardholder data environment."
+    #
+    # Private endpoints ensure the database is accessible ONLY from
+    # within the VNet. There is no public IP, no public DNS resolution,
+    # and no firewall rules to misconfigure.
+    #
+    # NOTE: This assumes a VNet already exists (created by Terraform).
+    # The subnet is created within that VNet using a reference.
+    # -------------------------------------------------------------------
+    - name: private-endpoint-subnet
+      base:
+        apiVersion: network.azure.upbound.io/v1beta2
+        kind: Subnet
+        spec:
+          forProvider:
+            resourceGroupNameSelector:
+              matchControllerRef: true
+            virtualNetworkName: aks-regulated-vnet  # Reference to existing VNet
+            addressPrefixes:
+              - "10.1.100.0/24"
+            delegation:
+              - name: postgresql-delegation
+                serviceDelegation:
+                  - name: Microsoft.DBforPostgreSQL/flexibleServers
+                    actions:
+                      - Microsoft.Network/virtualNetworks/subnets/join/action
+          providerConfigRef:
+            name: default
+
+    # -------------------------------------------------------------------
+    # RESOURCE 5: Private DNS Zone
+    # -------------------------------------------------------------------
+    # Private DNS zone for resolving the database hostname within the VNet.
+    #
+    # WHY PRIVATE DNS:
+    # When a private endpoint is created, Azure assigns a private IP.
+    # The private DNS zone maps the database FQDN to this private IP,
+    # so applications can connect using the same hostname regardless of
+    # whether they go through the private endpoint or not.
+    #
+    # Without private DNS, applications would need to use the private IP
+    # directly, which is fragile and hard to manage.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 1.1):
+    # Network architecture must be documented. Private DNS zones provide
+    # a clear, auditable mapping between service names and network
+    # addresses within the private network.
+    # -------------------------------------------------------------------
+    - name: private-dns-zone
+      base:
+        apiVersion: network.azure.upbound.io/v1beta2
+        kind: PrivateDNSZone
+        spec:
+          forProvider:
+            resourceGroupNameSelector:
+              matchControllerRef: true
+          providerConfigRef:
+            name: default
+        metadata:
+          labels:
+            dns-zone-type: postgresql

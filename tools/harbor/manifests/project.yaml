@@ -1,0 +1,355 @@
+# ABOUTME: Kubernetes Job that creates Harbor projects via the API on initial setup.
+# ABOUTME: Configures "regulated-apps" (scan-enforced) and "dev-images" (permissive) projects.
+
+# =============================================================================
+# HARBOR PROJECT SETUP JOB
+# =============================================================================
+# Harbor projects are not Kubernetes CRDs -- they are managed through the
+# Harbor REST API. This manifest creates a Kubernetes Job that calls the
+# Harbor API to set up initial projects with appropriate policies.
+#
+# WHY A JOB (NOT A CRD)?
+# Harbor does not install Custom Resource Definitions for project management.
+# Projects, users, robot accounts, and policies are all managed via the
+# Harbor REST API (or the web UI). This Job automates the initial setup
+# that would otherwise be manual clicks in the UI.
+#
+# PROJECTS CREATED:
+#   1. regulated-apps  -- Production images with mandatory vulnerability scanning
+#   2. dev-images      -- Development images with permissive policies
+#
+# WHEN TO RUN:
+# Run this Job once after Harbor installation completes.
+# It is idempotent -- running it again will detect existing projects
+# and skip creation.
+#
+# HARBOR API REFERENCE:
+# POST /api/v2.0/projects -- Create a project
+# GET  /api/v2.0/projects -- List projects
+# PUT  /api/v2.0/projects/{project_name_or_id} -- Update project settings
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Separation of production and development environments
+#   - SOC 2 CC6.1: Access controls differ per environment classification
+#   - PCI-DSS Req 6.4: Separate development/test from production environments
+# =============================================================================
+
+---
+# -----------------------------------------------------------------------------
+# CONFIGMAP: PROJECT SETUP SCRIPT
+# -----------------------------------------------------------------------------
+# Contains the shell script that creates and configures Harbor projects.
+# Separated from the Job spec for readability and easier maintenance.
+#
+# SCRIPT BEHAVIOR:
+# 1. Waits for Harbor API to become healthy
+# 2. Creates "regulated-apps" project with scan enforcement
+# 3. Creates "dev-images" project with permissive settings
+# 4. Configures vulnerability scan policies per project
+# 5. Reports results
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-project-setup
+  namespace: harbor-system
+  labels:
+    app.kubernetes.io/part-of: harbor
+    app.kubernetes.io/component: setup
+data:
+  setup-projects.sh: |
+    #!/bin/sh
+    # =========================================================================
+    # Harbor Project Setup Script
+    # =========================================================================
+    # Creates initial Harbor projects with appropriate security policies.
+    # Designed to run as a Kubernetes Job after Harbor installation.
+    # =========================================================================
+
+    set -e
+
+    # -------------------------------------------------------------------------
+    # Configuration
+    # -------------------------------------------------------------------------
+    # HARBOR_URL: Internal cluster URL for the Harbor Core service.
+    # Using the Kubernetes service DNS name avoids ingress/TLS complexity.
+    #
+    # HARBOR_USER / HARBOR_PASSWORD: Admin credentials for initial setup.
+    # In production, these should come from a Secret mount, not env vars.
+    # -------------------------------------------------------------------------
+    HARBOR_URL="${HARBOR_URL:-http://harbor-core.harbor-system.svc.cluster.local:80}"
+    HARBOR_USER="${HARBOR_USER:-admin}"
+    HARBOR_PASSWORD="${HARBOR_PASSWORD:-Harbor12345}"
+
+    API="${HARBOR_URL}/api/v2.0"
+
+    # -------------------------------------------------------------------------
+    # Wait for Harbor API to be ready
+    # -------------------------------------------------------------------------
+    # Harbor takes 1-3 minutes to fully initialize after pod startup.
+    # The health endpoint returns 200 when all components are ready.
+    # -------------------------------------------------------------------------
+    echo "Waiting for Harbor API to become healthy..."
+    RETRIES=30
+    DELAY=10
+    for i in $(seq 1 $RETRIES); do
+      STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API}/health" || true)
+      if [ "$STATUS" = "200" ]; then
+        echo "Harbor API is healthy."
+        break
+      fi
+      echo "  Attempt $i/$RETRIES: API returned $STATUS. Retrying in ${DELAY}s..."
+      sleep "$DELAY"
+    done
+
+    if [ "$STATUS" != "200" ]; then
+      echo "ERROR: Harbor API did not become healthy after $((RETRIES * DELAY))s."
+      exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Helper: Create a Harbor project
+    # -------------------------------------------------------------------------
+    # Arguments:
+    #   $1 -- Project name
+    #   $2 -- Public (true/false). Public projects allow anonymous pulls.
+    #   $3 -- Auto-scan on push (true/false)
+    #   $4 -- Prevent vulnerable images (true/false)
+    #   $5 -- Severity threshold (critical, high, medium, low, none)
+    #   $6 -- Storage quota in bytes (-1 for unlimited)
+    # -------------------------------------------------------------------------
+    create_project() {
+      PROJECT_NAME="$1"
+      PUBLIC="$2"
+      AUTO_SCAN="$3"
+      PREVENT_VUL="$4"
+      SEVERITY="$5"
+      QUOTA="$6"
+
+      # Check if project already exists
+      EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
+        -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+        "${API}/projects?name=${PROJECT_NAME}")
+
+      if [ "$EXISTS" = "200" ]; then
+        # Check if the project name matches (API returns 200 for search results)
+        COUNT=$(curl -s -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+          "${API}/projects?name=${PROJECT_NAME}" | \
+          grep -c "\"name\":\"${PROJECT_NAME}\"" || true)
+
+        if [ "$COUNT" -gt 0 ]; then
+          echo "Project '${PROJECT_NAME}' already exists. Skipping creation."
+          return 0
+        fi
+      fi
+
+      echo "Creating project '${PROJECT_NAME}'..."
+
+      # Create the project with metadata
+      RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -X POST "${API}/projects" \
+        -d "{
+          \"project_name\": \"${PROJECT_NAME}\",
+          \"public\": ${PUBLIC},
+          \"metadata\": {
+            \"auto_scan\": \"${AUTO_SCAN}\",
+            \"prevent_vul\": \"${PREVENT_VUL}\",
+            \"severity\": \"${SEVERITY}\",
+            \"reuse_sys_cve_allowlist\": \"true\"
+          },
+          \"storage_limit\": ${QUOTA}
+        }")
+
+      if [ "$RESPONSE" = "201" ]; then
+        echo "  Project '${PROJECT_NAME}' created successfully."
+      elif [ "$RESPONSE" = "409" ]; then
+        echo "  Project '${PROJECT_NAME}' already exists (409 Conflict)."
+      else
+        echo "  WARNING: Unexpected response $RESPONSE creating '${PROJECT_NAME}'."
+      fi
+    }
+
+    # =========================================================================
+    # PROJECT 1: regulated-apps
+    # =========================================================================
+    # Production project with strict security policies.
+    #
+    # POLICIES:
+    #   - Auto-scan: ON -- Every pushed image is scanned immediately
+    #   - Prevent vulnerable: ON -- Images with High/Critical CVEs cannot
+    #     be pulled (blocks deployment of vulnerable images)
+    #   - Severity threshold: high -- Block pulls if High or Critical CVEs
+    #   - Public: OFF -- Only authenticated users can pull
+    #   - Quota: 20GB -- Prevents runaway storage consumption
+    #
+    # REGULATORY CONTEXT (NCUA Part 748):
+    # "Risk-based controls for production systems" -- mandatory scanning
+    # and pull prevention enforce a security gate before deployment.
+    #
+    # WORKFLOW:
+    # 1. CI/CD pushes image to harbor.example.com/regulated-apps/my-app:v1
+    # 2. Harbor auto-scans the image with Trivy
+    # 3. If Critical/High CVEs found, image pull is blocked
+    # 4. Developer must fix CVEs and push a new image
+    # 5. Clean image can be pulled and deployed to AKS
+    # =========================================================================
+    echo ""
+    echo "=== Setting up 'regulated-apps' project ==="
+    create_project \
+      "regulated-apps" \
+      "false" \
+      "true" \
+      "true" \
+      "high" \
+      21474836480
+
+    # =========================================================================
+    # PROJECT 2: dev-images
+    # =========================================================================
+    # Development project with permissive policies.
+    #
+    # POLICIES:
+    #   - Auto-scan: ON -- Still scan for visibility, but don't block
+    #   - Prevent vulnerable: OFF -- Allow pulling vulnerable images
+    #   - Public: OFF -- Still requires authentication
+    #   - Quota: 10GB -- Lower quota for development images
+    #
+    # WHY PERMISSIVE?
+    # Development environments need flexibility. Developers should see
+    # scan results (awareness) but not be blocked from iterating.
+    # The "regulated-apps" project enforces the gate for production.
+    #
+    # REGULATORY CONTEXT (PCI-DSS Req 6.4):
+    # "Separation of development and production" -- different policies
+    # for different environment classifications.
+    # =========================================================================
+    echo ""
+    echo "=== Setting up 'dev-images' project ==="
+    create_project \
+      "dev-images" \
+      "false" \
+      "true" \
+      "false" \
+      "none" \
+      10737418240
+
+    echo ""
+    echo "=== Harbor project setup complete ==="
+
+---
+# -----------------------------------------------------------------------------
+# JOB: HARBOR PROJECT SETUP
+# -----------------------------------------------------------------------------
+# Runs the project setup script as a one-time Kubernetes Job.
+#
+# EXECUTION:
+#   kubectl apply -f project.yaml
+#   kubectl logs -n harbor-system job/harbor-project-setup
+#
+# RE-RUNNING:
+# To re-run the setup (e.g., after Harbor reinstall):
+#   kubectl delete job harbor-project-setup -n harbor-system
+#   kubectl apply -f project.yaml
+#
+# DEPENDENCIES:
+# - Harbor must be installed and all pods must be Running
+# - The harbor-core service must be accessible within the cluster
+# - Admin credentials must be valid
+# -----------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-project-setup
+  namespace: harbor-system
+  labels:
+    app.kubernetes.io/part-of: harbor
+    app.kubernetes.io/component: setup
+spec:
+  # ---------------------------------------------------------------------------
+  # TTL AFTER FINISHED
+  # ---------------------------------------------------------------------------
+  # Automatically clean up the completed Job pod after 5 minutes.
+  # Keeps the namespace tidy while allowing time to check logs.
+  # ---------------------------------------------------------------------------
+  ttlSecondsAfterFinished: 300
+
+  # ---------------------------------------------------------------------------
+  # BACKOFF LIMIT
+  # ---------------------------------------------------------------------------
+  # Number of retries before marking the Job as failed.
+  # 3 retries with the built-in wait loop (30 * 10s = 5 min) gives
+  # Harbor up to ~20 minutes to become ready.
+  # ---------------------------------------------------------------------------
+  backoffLimit: 3
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: harbor
+        app.kubernetes.io/component: setup
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+        - name: setup
+          # -----------------------------------------------------------------
+          # IMAGE
+          # -----------------------------------------------------------------
+          # Using curlimages/curl because it provides curl and basic shell
+          # utilities in a minimal image (~5MB). No additional dependencies
+          # needed for Harbor API calls.
+          # -----------------------------------------------------------------
+          image: curlimages/curl:8.7.1
+          command: ["/bin/sh", "/scripts/setup-projects.sh"]
+
+          # -----------------------------------------------------------------
+          # CREDENTIALS FROM SECRET
+          # -----------------------------------------------------------------
+          # Admin credentials should be stored in a Kubernetes Secret.
+          # The Job reads them as environment variables.
+          #
+          # Create the secret before running the Job:
+          #   kubectl create secret generic harbor-admin-credentials \
+          #     --from-literal=username=admin \
+          #     --from-literal=password=Harbor12345 \
+          #     -n harbor-system
+          #
+          # For production, use External Secrets Operator to sync
+          # credentials from Azure Key Vault.
+          # -----------------------------------------------------------------
+          env:
+            - name: HARBOR_URL
+              value: "http://harbor-core.harbor-system.svc.cluster.local:80"
+            - name: HARBOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-admin-credentials
+                  key: username
+                  optional: true
+            - name: HARBOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-admin-credentials
+                  key: password
+                  optional: true
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: harbor-project-setup
+            defaultMode: 0755

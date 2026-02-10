@@ -1,0 +1,308 @@
+# ABOUTME: Longhorn RecurringJob CRDs for automated snapshot and backup scheduling.
+# ABOUTME: Defines a 6-hour snapshot job and a daily backup job with retention policies for compliance.
+#
+# =============================================================================
+# LONGHORN RECURRING JOBS
+# =============================================================================
+# RecurringJob is a Longhorn Custom Resource that defines automated snapshot
+# and backup schedules. Jobs are attached to volumes via StorageClass
+# parameters (recurringJobSelector) or directly via volume labels.
+#
+# WHY RECURRING JOBS?
+# Manual snapshots and backups are unreliable -- someone forgets, is on
+# vacation, or the process isn't documented. Automated recurring jobs
+# ensure consistent data protection without human intervention.
+#
+# JOB TYPES:
+#   snapshot: Creates a local point-in-time snapshot of the volume.
+#             Fast (metadata operation). Stored on the same nodes as replicas.
+#             Protects against: accidental deletion, application bugs, rollback.
+#
+#   snapshot-cleanup: Removes snapshots older than retention policy.
+#             Prevents disk space exhaustion from accumulated snapshots.
+#
+#   backup: Creates an incremental backup to the external backup target
+#           (Azure Blob Storage). Stored off-cluster.
+#           Protects against: cluster failure, node loss, data center outage.
+#
+#   backup-force-create: Same as backup but creates a new snapshot first.
+#
+# SNAPSHOT vs BACKUP:
+#   +------------------+------------------+------------------+
+#   | Property         | Snapshot         | Backup           |
+#   +------------------+------------------+------------------+
+#   | Storage location | Same nodes       | External (Blob)  |
+#   | Speed            | Instant          | Minutes          |
+#   | Space cost       | Low (COW blocks) | Moderate         |
+#   | Survives cluster | No               | Yes              |
+#   | failure?         |                  |                  |
+#   | RPO contribution | Sub-hourly       | Daily/hourly     |
+#   +------------------+------------------+------------------+
+#
+# REGULATORY CONTEXT:
+#   - DORA Article 12(1): "Backup policies shall specify frequency, scope,
+#     retention period, and methods of backup and restoration"
+#   - DORA Article 12(2): "Restoration procedures shall be tested periodically"
+#   - NCUA Part 748 Appendix A: "Backup and recovery procedures for critical
+#     information systems"
+#   - SOC 2 A1.2: "System recovery mechanisms are designed, developed, and
+#     implemented to meet recovery objectives"
+#   - PCI-DSS 12.10.1: "Incident response plan includes data recovery"
+# =============================================================================
+
+# =============================================================================
+# SNAPSHOT EVERY 6 HOURS
+# =============================================================================
+# Takes a snapshot of all attached volumes every 6 hours. Snapshots are
+# local (same-node) and near-instantaneous because they use copy-on-write
+# (COW) semantics -- only blocks that change after the snapshot consume
+# additional space.
+#
+# RPO (Recovery Point Objective):
+# With 6-hour snapshots, maximum data loss in a non-cluster-destroying
+# event is 6 hours. Combined with application-level WAL/journaling,
+# actual data loss may be less.
+#
+# RETENTION: 5 snapshots = 30 hours of history
+# This provides enough rollback points for investigating issues that are
+# discovered within a business day.
+# =============================================================================
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: snapshot-every-6h
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: longhorn
+    app.kubernetes.io/component: data-protection
+    compliance.regulated/dora: "article-12"
+    compliance.regulated/ncua: "backup-recovery"
+spec:
+  # ---------------------------------------------------------------------------
+  # JOB NAME
+  # ---------------------------------------------------------------------------
+  # The name used in StorageClass recurringJobSelector to attach this job
+  # to volumes. Must match the metadata.name.
+  # ---------------------------------------------------------------------------
+  name: snapshot-every-6h
+
+  # ---------------------------------------------------------------------------
+  # TASK TYPE
+  # ---------------------------------------------------------------------------
+  # "snapshot" creates a local volume snapshot using COW semantics.
+  # Fast, low-overhead, but only survives local node storage.
+  # ---------------------------------------------------------------------------
+  task: snapshot
+
+  # ---------------------------------------------------------------------------
+  # CRON SCHEDULE
+  # ---------------------------------------------------------------------------
+  # Standard cron format: minute hour day-of-month month day-of-week
+  #
+  # "0 */6 * * *" = At minute 0 of every 6th hour
+  #   - 00:00, 06:00, 12:00, 18:00 UTC
+  #
+  # TIMEZONE:
+  # Cron runs in UTC. Adjust if your compliance reporting is in a
+  # different timezone. For US Eastern: subtract 5 hours (EST) or 4 (EDT).
+  #
+  # FREQUENCY GUIDANCE:
+  #   Every 1h:  Low RPO, higher disk usage (aggressive)
+  #   Every 6h:  Balanced RPO and disk usage (recommended)
+  #   Every 12h: Higher RPO, lower disk usage (relaxed)
+  #   Every 24h: Minimum acceptable for most regulations
+  # ---------------------------------------------------------------------------
+  cron: "0 */6 * * *"
+
+  # ---------------------------------------------------------------------------
+  # RETENTION COUNT
+  # ---------------------------------------------------------------------------
+  # Number of snapshots to keep. Oldest snapshots are deleted when the
+  # count is exceeded.
+  #
+  # 5 SNAPSHOTS RATIONALE:
+  # With 6-hour intervals, 5 snapshots = 30 hours of history:
+  #   - Current state + 4 prior snapshots
+  #   - Covers more than a full business day
+  #   - Enough for "undo" scenarios and incident investigation
+  #
+  # DISK SPACE IMPACT:
+  # Snapshots use COW, so only changed blocks since the last snapshot
+  # consume space. Typical overhead: 5-20% of volume size per snapshot
+  # depending on write patterns.
+  #
+  # REGULATORY CONTEXT (DORA Article 12):
+  # "Retention period" must be documented. 30 hours of local snapshots
+  # provides operational rollback; longer-term retention is handled by
+  # backups (see backup-daily job below).
+  # ---------------------------------------------------------------------------
+  retain: 5
+
+  # ---------------------------------------------------------------------------
+  # CONCURRENCY
+  # ---------------------------------------------------------------------------
+  # Maximum number of volumes processed simultaneously by this job.
+  # Higher concurrency speeds up the job but increases I/O load.
+  #
+  # 5: Conservative default. Increase for clusters with many volumes
+  # and sufficient I/O capacity.
+  # ---------------------------------------------------------------------------
+  concurrency: 5
+
+  # ---------------------------------------------------------------------------
+  # GROUPS
+  # ---------------------------------------------------------------------------
+  # RecurringJob groups allow you to attach multiple jobs to volumes using
+  # a single group label. We define the job individually and attach via
+  # recurringJobSelector in the StorageClass, so groups are optional.
+  # ---------------------------------------------------------------------------
+  groups: []
+
+  # ---------------------------------------------------------------------------
+  # LABELS
+  # ---------------------------------------------------------------------------
+  # Labels applied to snapshots created by this job. Useful for filtering
+  # and identifying automated snapshots vs manual ones.
+  # ---------------------------------------------------------------------------
+  labels:
+    source: recurring-job
+    schedule: every-6h
+
+# =============================================================================
+# DAILY BACKUP TO AZURE BLOB STORAGE
+# =============================================================================
+# Creates an incremental backup of all attached volumes to Azure Blob Storage
+# once per day. Backups are the disaster recovery mechanism -- they survive
+# complete cluster loss.
+#
+# RPO (Recovery Point Objective):
+# With daily backups, maximum data loss in a cluster-destroying event is
+# 24 hours. For lower RPO, increase frequency (e.g., every 6 hours).
+#
+# RTO (Recovery Time Objective):
+# Restore time depends on volume size and network bandwidth to Azure Blob.
+# Typical: 10-30 minutes for volumes under 100Gi.
+#
+# RETENTION: 14 backups = 14 days of history
+# Two weeks provides sufficient history for:
+#   - Delayed discovery of data corruption
+#   - Regulatory hold periods during investigations
+#   - Compliance audit evidence
+#
+# BACKUP MECHANICS:
+# 1. Longhorn creates a snapshot (point-in-time consistency)
+# 2. Changed blocks since last backup are identified
+# 3. Changed blocks are compressed and uploaded to Azure Blob
+# 4. Backup metadata is written to the backup target
+# 5. Backup is verified for completeness
+#
+# COST ESTIMATE (Azure Blob Hot tier):
+# - 100Gi volume with 5% daily change rate
+# - First backup: ~100Gi upload
+# - Subsequent: ~5Gi/day incremental
+# - 14-day retention: ~170Gi stored
+# - Cost: ~$3-4/month at Hot tier pricing
+# =============================================================================
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: backup-daily
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: longhorn
+    app.kubernetes.io/component: data-protection
+    compliance.regulated/dora: "article-12"
+    compliance.regulated/ncua: "backup-recovery"
+    compliance.regulated/soc2: "A1.2"
+    compliance.regulated/pci-dss: "requirement-12.10"
+spec:
+  # ---------------------------------------------------------------------------
+  # JOB NAME
+  # ---------------------------------------------------------------------------
+  name: backup-daily
+
+  # ---------------------------------------------------------------------------
+  # TASK TYPE
+  # ---------------------------------------------------------------------------
+  # "backup" creates a snapshot first, then uploads changed blocks to the
+  # external backup target (Azure Blob Storage as configured in values.yaml
+  # defaultSettings.backupTarget).
+  #
+  # NETWORK REQUIREMENTS:
+  # The longhorn-manager pods must have network access to the Azure Blob
+  # endpoint. If using private endpoints, ensure the VNet is configured
+  # correctly. If using public endpoints, ensure NSG rules allow HTTPS
+  # outbound to Azure storage.
+  # ---------------------------------------------------------------------------
+  task: backup
+
+  # ---------------------------------------------------------------------------
+  # CRON SCHEDULE
+  # ---------------------------------------------------------------------------
+  # "0 2 * * *" = Daily at 02:00 UTC
+  #
+  # WHY 02:00 UTC?
+  # - Low-traffic window for most US-based financial institutions
+  # - 02:00 UTC = 21:00 EST = 22:00 EDT (previous day evening)
+  # - Minimizes I/O contention with application workloads
+  # - Aligns with common batch processing windows
+  #
+  # ADJUST FOR YOUR TIMEZONE AND WORKLOAD:
+  # If your peak traffic is at different hours, schedule backups during
+  # your off-peak window. The backup creates I/O load that may affect
+  # volume latency for co-located workloads.
+  # ---------------------------------------------------------------------------
+  cron: "0 2 * * *"
+
+  # ---------------------------------------------------------------------------
+  # RETENTION COUNT
+  # ---------------------------------------------------------------------------
+  # Number of backups to retain in Azure Blob Storage.
+  #
+  # 14 BACKUPS RATIONALE:
+  # - 14 days of daily backups provides two-week recovery window
+  # - Sufficient for most incident investigation timelines
+  # - Manageable storage cost (incremental backups)
+  # - Aligns with common audit review cycles
+  #
+  # FOR LONGER RETENTION:
+  # Use Azure Blob lifecycle management to move older backups to Cool
+  # or Archive tier, or increase retain to 30/90 for extended compliance:
+  #   30: Monthly regulatory review cycle
+  #   90: Quarterly audit period
+  #   365: Annual retention (use Azure lifecycle policies for cost)
+  #
+  # REGULATORY CONTEXT:
+  # - NCUA: "Maintain backup copies" -- 14 days minimum recommended
+  # - DORA Article 12: "Retention period aligned with business needs"
+  # - SOC 2 A1.2: "Recovery mechanisms tested and validated"
+  # - PCI-DSS 12.10: "Incident response includes data recovery"
+  #
+  # AUDIT TRAIL:
+  # Longhorn logs each backup operation. Combine with Azure Blob access
+  # logs for a complete audit trail of backup lifecycle.
+  # ---------------------------------------------------------------------------
+  retain: 14
+
+  # ---------------------------------------------------------------------------
+  # CONCURRENCY
+  # ---------------------------------------------------------------------------
+  # Backups are more I/O intensive than snapshots because they upload data
+  # to Azure Blob. Lower concurrency (3) reduces the I/O impact on
+  # application workloads during the backup window.
+  #
+  # NETWORK BANDWIDTH:
+  # Each concurrent backup streams data to Azure Blob. With 3 concurrent
+  # backups on a 1Gbps node network, each backup gets ~330Mbps -- usually
+  # more than enough for incremental uploads.
+  # ---------------------------------------------------------------------------
+  concurrency: 3
+
+  groups: []
+
+  labels:
+    source: recurring-job
+    schedule: daily
+    type: disaster-recovery

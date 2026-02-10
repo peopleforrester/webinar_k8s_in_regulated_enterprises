@@ -1,0 +1,297 @@
+# ABOUTME: StorageClass definitions for Longhorn distributed block storage on AKS.
+# ABOUTME: Includes a standard 3-replica class and a regulated-encrypted class with LUKS encryption.
+#
+# =============================================================================
+# LONGHORN STORAGE CLASSES
+# =============================================================================
+# StorageClasses define how volumes are provisioned. These are the "templates"
+# that PVCs reference when requesting storage.
+#
+# WHY CUSTOM STORAGE CLASSES?
+# Longhorn creates a default StorageClass during installation, but regulated
+# environments need explicit control over:
+#   - Replica count (data durability guarantee)
+#   - Encryption (data-at-rest protection)
+#   - Snapshot scheduling (backup compliance)
+#   - Filesystem type (workload compatibility)
+#   - Reclaim policy (data lifecycle management)
+#
+# KUBERNETES STORAGE FLOW:
+#   1. Admin creates StorageClass (this file)
+#   2. Developer creates PVC referencing the StorageClass
+#   3. Longhorn CSI provisioner creates a volume with the specified parameters
+#   4. Pod mounts the PVC; Kubernetes binds the PV automatically
+#   5. Data is replicated to N nodes per the StorageClass parameters
+#
+# REGULATORY CONTEXT:
+#   - SOC 2 CC6.1: Data protection controls documented in StorageClass params
+#   - PCI-DSS Req 3: Encryption requirements for stored data
+#   - DORA Article 11: Data integrity via replication and checksums
+# =============================================================================
+
+# =============================================================================
+# STANDARD LONGHORN STORAGE CLASS
+# =============================================================================
+# General-purpose distributed storage with 3-way replication.
+# Use for stateful workloads that need high availability but do not require
+# per-volume encryption beyond what AKS node-level encryption provides.
+# =============================================================================
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-standard
+  labels:
+    app.kubernetes.io/part-of: longhorn
+    app.kubernetes.io/component: storage
+  annotations:
+    # -------------------------------------------------------------------------
+    # DESCRIPTION ANNOTATION
+    # -------------------------------------------------------------------------
+    # Helps cluster users understand what this StorageClass provides when
+    # they run: kubectl describe storageclass longhorn-standard
+    # -------------------------------------------------------------------------
+    storageclass.kubernetes.io/is-default-class: "false"
+
+# ---------------------------------------------------------------------------
+# PROVISIONER
+# ---------------------------------------------------------------------------
+# The CSI driver name that handles volume provisioning. This must match
+# the driver registered by Longhorn during installation.
+# ---------------------------------------------------------------------------
+provisioner: driver.longhorn.io
+
+# ---------------------------------------------------------------------------
+# RECLAIM POLICY
+# ---------------------------------------------------------------------------
+# What happens to the underlying volume when the PVC is deleted.
+#
+# Delete: Volume and all replicas are destroyed. Data is unrecoverable.
+#         Appropriate for ephemeral or replaceable data.
+#
+# Retain: Volume and replicas survive PVC deletion. Must be manually
+#         cleaned up. Appropriate for regulated data requiring controlled
+#         decommissioning.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# For volumes containing member data, consider "Retain" to prevent
+# accidental data deletion. Pair with a documented data disposition process.
+# ---------------------------------------------------------------------------
+reclaimPolicy: Delete
+
+# ---------------------------------------------------------------------------
+# ALLOW VOLUME EXPANSION
+# ---------------------------------------------------------------------------
+# Enables PVC resizing after creation. Longhorn supports online expansion
+# (no pod restart required). The pod continues running while the volume
+# grows underneath it.
+#
+# EXAMPLE:
+#   kubectl patch pvc my-data -p '{"spec":{"resources":{"requests":{"storage":"20Gi"}}}}'
+# ---------------------------------------------------------------------------
+allowVolumeExpansion: true
+
+# ---------------------------------------------------------------------------
+# VOLUME BINDING MODE
+# ---------------------------------------------------------------------------
+# WaitForFirstConsumer: Volume is not provisioned until a pod references
+#   the PVC and is scheduled to a specific node. This ensures the volume
+#   is created in the correct topology zone.
+#
+# Immediate: Volume is provisioned as soon as the PVC is created,
+#   regardless of whether a pod needs it.
+#
+# WHY WAIT?
+# WaitForFirstConsumer prevents the volume from being provisioned on a
+# node in a different availability zone than the consuming pod, which
+# would cause cross-zone latency or scheduling failures.
+# ---------------------------------------------------------------------------
+volumeBindingMode: WaitForFirstConsumer
+
+# ---------------------------------------------------------------------------
+# PARAMETERS
+# ---------------------------------------------------------------------------
+# Longhorn-specific volume parameters. These control how the CSI driver
+# creates and manages the volume.
+# ---------------------------------------------------------------------------
+parameters:
+  # -------------------------------------------------------------------------
+  # NUMBER OF REPLICAS
+  # -------------------------------------------------------------------------
+  # Three replicas across different nodes provide tolerance for a single
+  # node failure. The volume remains fully functional with 2/3 replicas
+  # while Longhorn rebuilds the third on another node.
+  #
+  # MATH:
+  # With 3 replicas and 3+ nodes, the probability of simultaneous failure
+  # of 2 specific nodes is extremely low in a well-managed cluster.
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "Data shall be protected against loss" -- 3-way replication is the
+  # minimum acceptable level for regulated data.
+  # -------------------------------------------------------------------------
+  numberOfReplicas: "3"
+
+  # -------------------------------------------------------------------------
+  # FILESYSTEM TYPE
+  # -------------------------------------------------------------------------
+  # ext4: Mature, well-tested, journaling filesystem.
+  #       Best for general workloads, smaller files, mixed I/O.
+  # xfs:  High-performance filesystem optimized for large files.
+  #       Better for databases and sequential write workloads.
+  #
+  # ext4 is the safe default. Change to xfs only after testing with your
+  # specific workload patterns.
+  # -------------------------------------------------------------------------
+  fsType: "ext4"
+
+  # -------------------------------------------------------------------------
+  # DATA LOCALITY
+  # -------------------------------------------------------------------------
+  # best-effort: Longhorn attempts to place the volume controller on the
+  #   same node as the consuming pod. Falls back to remote access if the
+  #   local node cannot host the controller.
+  #
+  # This reduces read latency by one network hop for most operations.
+  # See values.yaml defaultSettings.defaultDataLocality for details.
+  # -------------------------------------------------------------------------
+  dataLocality: "best-effort"
+
+  # -------------------------------------------------------------------------
+  # STALE REPLICA TIMEOUT
+  # -------------------------------------------------------------------------
+  # Minutes before a disconnected replica is marked stale and scheduled
+  # for rebuild. A replica disconnects when its host node goes offline.
+  #
+  # 30 minutes allows for brief node maintenance (AKS node reboot during
+  # upgrade) without triggering unnecessary replica rebuilds.
+  #
+  # SHORTER (10-15m): Faster recovery but may trigger rebuilds during
+  #   normal AKS node pool upgrades.
+  # LONGER (60m+): Tolerates longer outages but delays recovery.
+  # -------------------------------------------------------------------------
+  staleReplicaTimeout: "30"
+
+  # -------------------------------------------------------------------------
+  # RECURRING JOB SELECTOR
+  # -------------------------------------------------------------------------
+  # Attaches recurring snapshot/backup jobs to volumes created from this
+  # StorageClass. The job names must match RecurringJob CRDs deployed in
+  # the cluster (see manifests/recurring-job.yaml).
+  #
+  # This ensures every volume created from this class automatically gets
+  # the regulated snapshot and backup schedule -- no manual job attachment.
+  #
+  # REGULATORY CONTEXT (DORA Article 12):
+  # "Backup procedures shall be automated" -- recurring jobs ensure
+  # backup compliance without relying on manual processes.
+  # -------------------------------------------------------------------------
+  recurringJobSelector: '[{"name": "snapshot-every-6h", "isGroup": false},
+    {"name": "backup-daily", "isGroup": false}]'
+
+# =============================================================================
+# ENCRYPTED LONGHORN STORAGE CLASS
+# =============================================================================
+# Per-volume LUKS encryption for regulated data. Each volume gets a unique
+# encryption key stored in a Kubernetes Secret.
+#
+# USE CASES:
+#   - PII / member data storage
+#   - Financial transaction logs
+#   - Cardholder data (PCI-DSS scope)
+#   - Any data requiring encryption beyond node-level disk encryption
+#
+# HOW ENCRYPTION WORKS:
+#   1. PVC is created referencing this StorageClass
+#   2. Longhorn creates a LUKS-encrypted volume
+#   3. An encryption key is generated and stored in a Kubernetes Secret
+#   4. The volume is decrypted at mount time using the key from the Secret
+#   5. Data is encrypted at rest on all replicas
+#
+# DEFENSE IN DEPTH:
+# AKS encrypts node disks with Azure-managed keys (or customer-managed keys
+# via Azure Key Vault). Longhorn encryption adds a second layer:
+#   Layer 1: Azure disk encryption (node level)
+#   Layer 2: Longhorn LUKS encryption (volume level)
+# Even if a node disk is compromised, individual volume data remains encrypted.
+#
+# REGULATORY CONTEXT:
+#   - PCI-DSS Req 3.4: "Render PAN unreadable anywhere it is stored"
+#   - SOC 2 CC6.1: "Encrypt sensitive data at rest"
+#   - DORA Article 9: "Data protection measures including encryption"
+#   - NCUA Part 748: "Protect member information" via encryption
+# =============================================================================
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-regulated-encrypted
+  labels:
+    app.kubernetes.io/part-of: longhorn
+    app.kubernetes.io/component: storage
+    compliance.regulated/ncua: "data-protection"
+    compliance.regulated/pci-dss: "requirement-3"
+    compliance.regulated/dora: "article-9"
+    compliance.regulated/soc2: "CC6.1"
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: driver.longhorn.io
+
+# ---------------------------------------------------------------------------
+# RETAIN FOR REGULATED DATA
+# ---------------------------------------------------------------------------
+# Retain prevents accidental deletion of encrypted volumes containing
+# regulated data. A controlled decommissioning process should:
+#   1. Verify all data is backed up or migrated
+#   2. Document the deletion decision (audit trail)
+#   3. Manually delete the PV and Longhorn volume
+#   4. Verify the encryption key Secret is also deleted
+# ---------------------------------------------------------------------------
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+
+parameters:
+  # -------------------------------------------------------------------------
+  # REPLICA COUNT
+  # -------------------------------------------------------------------------
+  # Three replicas, same as standard class. All replicas store encrypted data.
+  # -------------------------------------------------------------------------
+  numberOfReplicas: "3"
+  fsType: "ext4"
+  dataLocality: "best-effort"
+  staleReplicaTimeout: "30"
+
+  # -------------------------------------------------------------------------
+  # ENCRYPTION CONFIGURATION
+  # -------------------------------------------------------------------------
+  # encrypted: "true" enables LUKS encryption on the volume.
+  #
+  # Longhorn manages the encryption key lifecycle:
+  #   - Key is generated during volume creation
+  #   - Key is stored in a Kubernetes Secret in the volume's namespace
+  #   - Key is used at mount time to decrypt the volume
+  #   - Key is never stored on disk in plaintext
+  #
+  # PERFORMANCE:
+  # LUKS encryption adds ~5-10% overhead on I/O operations depending on
+  # CPU availability and workload pattern. Modern CPUs with AES-NI
+  # hardware acceleration minimize this overhead.
+  #
+  # KEY MANAGEMENT:
+  # Protect the encryption key Secret with:
+  #   - RBAC: Restrict Secret access to authorized service accounts
+  #   - etcd encryption: Enable Kubernetes Secret encryption at rest
+  #   - Audit logging: Monitor Secret access via Kubernetes audit logs
+  #   - External Secrets: Store master keys in Azure Key Vault
+  # -------------------------------------------------------------------------
+  encrypted: "true"
+
+  # -------------------------------------------------------------------------
+  # RECURRING JOBS
+  # -------------------------------------------------------------------------
+  # Same snapshot and backup schedule as the standard class. Backups of
+  # encrypted volumes are also encrypted in the backup store.
+  # -------------------------------------------------------------------------
+  recurringJobSelector: '[{"name": "snapshot-every-6h", "isGroup": false},
+    {"name": "backup-daily", "isGroup": false}]'

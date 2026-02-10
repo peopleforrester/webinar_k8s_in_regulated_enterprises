@@ -1,0 +1,840 @@
+# ABOUTME: Helm values for Harbor container registry on AKS with educational comments.
+# ABOUTME: Tuned for regulated enterprise lab with Trivy scanning, RBAC, and audit logging.
+
+# =============================================================================
+# HARBOR - HELM VALUES
+# =============================================================================
+# Chart:   harbor/harbor
+# Version: 1.16.x (compatible with Harbor 2.12.x)
+# Repo:    https://github.com/goharbor/harbor-helm
+# Docs:    https://goharbor.io/docs/
+#
+# These values are tuned for the AKS regulated enterprise lab environment.
+# For production deployments, review each section carefully -- especially
+# persistence, database, and TLS configuration.
+#
+# WHY HARBOR ON AKS?
+# Azure Container Registry (ACR) is the native AKS registry, but Harbor adds:
+#   1. MULTI-CLOUD PORTABILITY: Same registry on any Kubernetes cluster
+#   2. BUILT-IN TRIVY SCANNING: Automatic CVE scanning on every push
+#   3. IMAGE SIGNING: Cosign integration for supply chain verification
+#   4. QUOTA MANAGEMENT: Per-project storage quotas for governance
+#   5. REPLICATION: Cross-registry replication for DR and multi-region
+#   6. ROBOT ACCOUNTS: Scoped CI/CD credentials with fine-grained permissions
+#   7. AUDIT LOGGING: Complete trail of who pushed/pulled what and when
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Supply chain risk management, access controls
+#   - SOC 2 CC6.1/CC8.1: Access controls, change management
+#   - DORA Article 9: Access control and supply chain governance
+#   - PCI-DSS Req 6: Secure software lifecycle
+#
+# ARCHITECTURE:
+# +-------------------+     +------------------+     +----------------+
+# | Harbor Portal     |     | Harbor Core      |     | Jobservice     |
+# | (Web UI)          +---->+ (API + Auth)     +---->+ (Async Tasks)  |
+# +-------------------+     +--------+---------+     +-------+--------+
+#                                    |                        |
+#                     +--------------+--------+               |
+#                     |              |        |               |
+#               +-----v----+  +-----v---+  +-v--------+  +--v---------+
+#               | Registry  |  | Database|  | Redis    |  | Trivy      |
+#               | (OCI)     |  | (PG)    |  | (Cache)  |  | (Scanner)  |
+#               +-----------+  +---------+  +----------+  +------------+
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# EXPOSE CONFIGURATION
+# -----------------------------------------------------------------------------
+# How Harbor is exposed outside the cluster. Options: ingress, clusterIP,
+# nodePort, loadBalancer.
+#
+# INGRESS (RECOMMENDED):
+# Uses an existing ingress controller (nginx, Traefik, Azure App Gateway)
+# to terminate TLS and route traffic to Harbor.
+#
+# ALTERNATIVES:
+#   clusterIP:    Internal only, use port-forward for access
+#   nodePort:     Expose on node ports (not recommended for production)
+#   loadBalancer: Creates a cloud load balancer per service (expensive)
+# -----------------------------------------------------------------------------
+expose:
+  # ---------------------------------------------------------------------------
+  # Expose Type
+  # ---------------------------------------------------------------------------
+  # "ingress" requires an ingress controller already running in the cluster.
+  # For lab environments without ingress, use "clusterIP" and kubectl
+  # port-forward instead.
+  # ---------------------------------------------------------------------------
+  type: ingress
+
+  tls:
+    # -------------------------------------------------------------------------
+    # TLS TERMINATION
+    # -------------------------------------------------------------------------
+    # enabled: true means Harbor expects HTTPS. This is mandatory for
+    # production registries because Docker/containerd require HTTPS for
+    # image push/pull (unless explicitly configured for insecure registries).
+    #
+    # CERTIFICATE OPTIONS:
+    #   certSource: auto     -- Use cert-manager to auto-provision certs
+    #   certSource: secret   -- Reference an existing TLS Secret
+    #   certSource: none     -- Let ingress controller handle TLS
+    #
+    # REGULATORY CONTEXT (DORA Article 9):
+    # "Encryption of data in transit" -- TLS is mandatory for registry
+    # traffic carrying container images and credentials.
+    # -------------------------------------------------------------------------
+    enabled: true
+    certSource: secret
+    secret:
+      # Name of the Kubernetes TLS Secret containing cert and key.
+      # Create this secret before installing Harbor, or use cert-manager
+      # to generate it automatically.
+      secretName: harbor-tls
+      notarySecretName: harbor-notary-tls
+
+  ingress:
+    # -------------------------------------------------------------------------
+    # INGRESS CONTROLLER
+    # -------------------------------------------------------------------------
+    # Specify which ingress controller handles Harbor traffic.
+    # Common choices on AKS:
+    #   nginx:              NGINX Ingress Controller (most common)
+    #   azure/application-gateway: Azure App Gateway Ingress Controller
+    #   traefik:            Traefik (default on k3s, Rancher)
+    # -------------------------------------------------------------------------
+    controller: default
+
+    # -------------------------------------------------------------------------
+    # INGRESS CLASS
+    # -------------------------------------------------------------------------
+    # The IngressClass to use. Must match an installed ingress controller.
+    # On AKS with NGINX: "nginx"
+    # On AKS with App Gateway: "azure-application-gateway"
+    # -------------------------------------------------------------------------
+    className: nginx
+
+    hosts:
+      # -----------------------------------------------------------------------
+      # HARBOR HOSTNAME
+      # -----------------------------------------------------------------------
+      # The DNS name for accessing Harbor. Replace with your actual domain.
+      #
+      # DNS SETUP:
+      # 1. Get the ingress controller's external IP:
+      #      kubectl get svc -n ingress-nginx
+      # 2. Create a DNS A record pointing to that IP
+      # 3. Or use Azure DNS zone for automatic management
+      #
+      # FOR LAB:
+      # Use /etc/hosts entry or nip.io for quick testing:
+      #   <ingress-ip>.nip.io
+      # -----------------------------------------------------------------------
+      core: harbor.example.com
+
+    annotations:
+      # -----------------------------------------------------------------------
+      # INGRESS ANNOTATIONS
+      # -----------------------------------------------------------------------
+      # These annotations configure NGINX ingress behavior for Harbor.
+      #
+      # proxy-body-size: "0" disables the request body size limit.
+      # Docker image layers can be gigabytes -- any limit here will cause
+      # push failures with "413 Request Entity Too Large".
+      #
+      # ssl-redirect: Forces HTTP to HTTPS redirect. Always enable for
+      # registries handling credentials and image data.
+      # -----------------------------------------------------------------------
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "900"
+
+# -----------------------------------------------------------------------------
+# EXTERNAL URL
+# -----------------------------------------------------------------------------
+# The URL that users and CI/CD systems use to access Harbor.
+#
+# CRITICAL: This must match the ingress hostname and protocol exactly.
+# Harbor uses this URL in:
+#   - Docker login redirect URLs
+#   - Webhook callback URLs
+#   - Replication endpoint configuration
+#   - UI links and API responses
+#
+# MISMATCHED URL SYMPTOMS:
+#   - "unauthorized: authentication required" on docker push
+#   - Redirect loops in the web UI
+#   - Replication failures between registries
+# -----------------------------------------------------------------------------
+externalURL: https://harbor.example.com
+
+# -----------------------------------------------------------------------------
+# PERSISTENCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Where Harbor stores data. Every stateful component needs durable storage.
+#
+# STORAGE OPTIONS ON AKS:
+#   PVC (managed-csi):   Azure Managed Disk -- good for small/medium installs
+#   Azure Blob Storage:  For large registries (TB+ of images)
+#   S3-compatible:       MinIO or other S3-compatible backends
+#
+# WHY PVC FOR LAB:
+# Managed Disks are the simplest option. They provide:
+#   - Encryption at rest (Azure-managed or customer-managed keys)
+#   - Snapshot support for backups
+#   - Predictable IOPS based on disk tier
+#
+# PRODUCTION RECOMMENDATION:
+# For registries exceeding 500GB, switch the registry storage to Azure Blob
+# Storage. Database and Redis should remain on Managed Disks for IOPS.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Data backup and recovery" -- PVC snapshots and Azure Blob versioning
+# provide point-in-time recovery for registry data.
+# -----------------------------------------------------------------------------
+persistence:
+  enabled: true
+
+  # ---------------------------------------------------------------------------
+  # RESOURCE POLICY
+  # ---------------------------------------------------------------------------
+  # "keep" prevents Helm from deleting PVCs on chart uninstall.
+  # This protects registry data from accidental deletion during upgrades
+  # or chart removal.
+  #
+  # OPTIONS:
+  #   keep:  PVCs survive chart uninstall (RECOMMENDED)
+  #   "":    PVCs deleted on chart uninstall (data loss risk)
+  #
+  # REGULATORY CONTEXT (SOC 2 CC8.1):
+  # "Change management" -- data protection during infrastructure changes.
+  # ---------------------------------------------------------------------------
+  resourcePolicy: "keep"
+
+  persistentVolumeClaim:
+    # -------------------------------------------------------------------------
+    # REGISTRY STORAGE
+    # -------------------------------------------------------------------------
+    # Stores OCI image layers and manifests. This is the largest volume
+    # because it holds all container image data.
+    #
+    # SIZING:
+    #   Lab:        10Gi  (holds ~50-100 small images)
+    #   Small prod: 100Gi (holds ~500-1000 images)
+    #   Large prod: Use Azure Blob Storage instead of PVC
+    #
+    # AZURE DISK TIERS:
+    #   Standard_LRS:  HDD, cheapest, suitable for lab
+    #   StandardSSD_LRS: SSD, better IOPS, moderate cost
+    #   Premium_LRS:   Premium SSD, best IOPS, for production
+    # -------------------------------------------------------------------------
+    registry:
+      storageClass: "managed-csi"
+      accessMode: ReadWriteOnce
+      size: 50Gi
+
+    # -------------------------------------------------------------------------
+    # DATABASE STORAGE
+    # -------------------------------------------------------------------------
+    # PostgreSQL data directory. Stores metadata about projects, users,
+    # scan results, audit logs, and replication rules.
+    #
+    # SIZING:
+    # Database size grows slowly relative to registry storage.
+    # 5Gi handles millions of image records.
+    # -------------------------------------------------------------------------
+    database:
+      storageClass: "managed-csi"
+      accessMode: ReadWriteOnce
+      size: 5Gi
+
+    # -------------------------------------------------------------------------
+    # REDIS STORAGE
+    # -------------------------------------------------------------------------
+    # Redis persistence for session cache and job queue durability.
+    # Small volume -- Redis data is transient and recoverable.
+    # -------------------------------------------------------------------------
+    redis:
+      storageClass: "managed-csi"
+      accessMode: ReadWriteOnce
+      size: 2Gi
+
+    # -------------------------------------------------------------------------
+    # JOBSERVICE STORAGE
+    # -------------------------------------------------------------------------
+    # Stores job logs and temporary data for async operations
+    # (replication, garbage collection, scan orchestration).
+    # -------------------------------------------------------------------------
+    jobservice:
+      jobLog:
+        storageClass: "managed-csi"
+        accessMode: ReadWriteOnce
+        size: 2Gi
+
+    # -------------------------------------------------------------------------
+    # TRIVY SCANNER STORAGE
+    # -------------------------------------------------------------------------
+    # Caches the Trivy vulnerability database locally. The DB is ~40MB
+    # compressed, ~500MB uncompressed. Caching avoids re-downloading
+    # the database on every pod restart.
+    # -------------------------------------------------------------------------
+    trivy:
+      storageClass: "managed-csi"
+      accessMode: ReadWriteOnce
+      size: 5Gi
+
+# -----------------------------------------------------------------------------
+# DATABASE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Harbor requires PostgreSQL for metadata storage.
+#
+# OPTIONS:
+#   internal: Bundled PostgreSQL StatefulSet (simple, lab-friendly)
+#   external: Azure Database for PostgreSQL Flexible Server (production)
+#
+# PRODUCTION RECOMMENDATION:
+# Use Azure Database for PostgreSQL Flexible Server:
+#   - Automated backups with point-in-time restore
+#   - High availability with zone-redundant replicas
+#   - Managed patching and version upgrades
+#   - Integration with Azure Monitor for alerting
+#   - VNet integration for private connectivity
+#
+# INTERNAL DATABASE IS SUITABLE FOR:
+#   - Lab and demo environments
+#   - Development clusters
+#   - Single-node test deployments
+#
+# REGULATORY CONTEXT (DORA Article 9):
+# "Availability and resilience" -- production databases must have
+# automated failover and backup capabilities.
+# -----------------------------------------------------------------------------
+database:
+  type: internal
+
+  internal:
+    # -------------------------------------------------------------------------
+    # INTERNAL POSTGRESQL SETTINGS
+    # -------------------------------------------------------------------------
+    # The bundled PostgreSQL runs as a StatefulSet with a single replica.
+    # Data is stored on the PVC defined above.
+    #
+    # PASSWORD:
+    # The initial password is set here for the lab. In production, use
+    # a Secret reference or External Secrets Operator to manage this.
+    #
+    # SECURITY NOTE:
+    # Change the default password immediately after installation.
+    # Consider using external PostgreSQL with Azure AD authentication
+    # for production deployments.
+    # -------------------------------------------------------------------------
+    password: "change-me-in-production"
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# REDIS CONFIGURATION
+# -----------------------------------------------------------------------------
+# Harbor uses Redis for session caching, rate limiting, and as a job queue
+# broker for the jobservice component.
+#
+# OPTIONS:
+#   internal: Bundled Redis StatefulSet
+#   external: Azure Cache for Redis (production)
+#
+# PRODUCTION RECOMMENDATION:
+# Use Azure Cache for Redis:
+#   - Managed HA with automatic failover
+#   - TLS encryption in transit
+#   - Azure AD authentication
+#   - Built-in monitoring and alerting
+# -----------------------------------------------------------------------------
+redis:
+  type: internal
+
+  internal:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# HARBOR CORE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Core is the central API and authentication engine.
+# All other components communicate through Core.
+# -----------------------------------------------------------------------------
+core:
+  # ---------------------------------------------------------------------------
+  # SECRET KEY
+  # ---------------------------------------------------------------------------
+  # Used to encrypt sensitive data in the database (robot account tokens,
+  # replication credentials, etc.).
+  #
+  # CRITICAL: This must be exactly 16 characters.
+  # Generate with: openssl rand -hex 8
+  #
+  # LOSS OF THIS KEY = LOSS OF ENCRYPTED DATA
+  # Back up this value in Azure Key Vault or your secrets manager.
+  #
+  # REGULATORY CONTEXT (PCI-DSS Req 3.4):
+  # "Render stored credentials unreadable" -- this key encrypts
+  # credentials stored in Harbor's database.
+  # ---------------------------------------------------------------------------
+  secret: "change-me-16char"
+  # Reference an existing secret instead of inline value:
+  # secretName: harbor-core-secret
+
+  # ---------------------------------------------------------------------------
+  # XSRF KEY
+  # ---------------------------------------------------------------------------
+  # Cross-Site Request Forgery protection key for the web UI.
+  # Must be exactly 32 characters.
+  # Generate with: openssl rand -hex 16
+  # ---------------------------------------------------------------------------
+  xsrfKey: "change-me-32-characters-exactly!"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# JOBSERVICE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Handles asynchronous operations: replication, garbage collection,
+# scan scheduling, and webhook deliveries.
+#
+# JOB TYPES:
+#   - IMAGE_REPLICATE: Cross-registry replication
+#   - IMAGE_SCAN: Vulnerability scanning via Trivy
+#   - IMAGE_GC: Garbage collection of deleted image layers
+#   - WEBHOOK: Notification delivery to external systems
+#   - RETENTION: Tag retention policy execution
+# -----------------------------------------------------------------------------
+jobservice:
+  # ---------------------------------------------------------------------------
+  # SECRET
+  # ---------------------------------------------------------------------------
+  # Shared secret between Core and Jobservice for authenticated communication.
+  # Generate with: openssl rand -hex 16
+  # ---------------------------------------------------------------------------
+  secret: "change-me-jobsvc"
+
+  # ---------------------------------------------------------------------------
+  # JOB WORKER POOL
+  # ---------------------------------------------------------------------------
+  # Maximum number of concurrent workers processing async jobs.
+  #
+  # SIZING:
+  #   5:  Lab environment (limited resources)
+  #   10: Medium deployment (handles steady image flow)
+  #   20: Large deployment (high push throughput)
+  #
+  # EACH WORKER USES:
+  #   ~50MB memory for replication jobs
+  #   ~100MB memory for scan jobs (Trivy invocation)
+  #   Minimal CPU (mostly I/O-bound operations)
+  # ---------------------------------------------------------------------------
+  maxJobWorkers: 5
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# REGISTRY CONFIGURATION
+# -----------------------------------------------------------------------------
+# The OCI-compliant registry backend that stores image layers and manifests.
+# This is the Docker Distribution (now CNCF Distribution) component.
+# -----------------------------------------------------------------------------
+registry:
+  # ---------------------------------------------------------------------------
+  # REGISTRY SECRET
+  # ---------------------------------------------------------------------------
+  # Shared secret between Core and Registry for authenticated communication.
+  # ---------------------------------------------------------------------------
+  secret: "change-me-registry"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  credentials:
+    # -------------------------------------------------------------------------
+    # HTPASSWD AUTHENTICATION
+    # -------------------------------------------------------------------------
+    # Internal authentication between Harbor Core and the Registry component.
+    # This is NOT the user-facing authentication -- it's inter-component auth.
+    #
+    # DEFAULT: harbor_registry_user / harbor_registry_password
+    # Change these in production deployments.
+    # -------------------------------------------------------------------------
+    username: harbor_registry_user
+    password: "change-me-registry-pw"
+
+# -----------------------------------------------------------------------------
+# TRIVY SCANNER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Harbor integrates Trivy as its vulnerability scanner. When enabled,
+# every image pushed to Harbor is automatically scanned for CVEs.
+#
+# HOW IT WORKS:
+# 1. Image is pushed to Harbor Registry
+# 2. Harbor Core notifies Jobservice of the new artifact
+# 3. Jobservice schedules a scan job
+# 4. Trivy adapter pulls the image manifest and layers
+# 5. Trivy scans for vulnerabilities using its CVE database
+# 6. Results are stored in Harbor's database and shown in the UI
+#
+# SCAN RESULTS INCLUDE:
+#   - CVE ID (e.g., CVE-2024-1234)
+#   - Severity (Critical, High, Medium, Low, Unknown)
+#   - Package name and installed version
+#   - Fixed version (if available)
+#   - CVSS score and vector
+#
+# INTEGRATION WITH KYVERNO:
+# Kyverno can query Harbor's scan results via the registry API and block
+# deployment of images with unresolved Critical/High CVEs.
+#
+# REGULATORY CONTEXT (NCUA Part 748, Appendix B):
+# "Vulnerability management program" -- automated scanning on every push
+# ensures no unscanned image enters the registry.
+# -----------------------------------------------------------------------------
+trivy:
+  # ---------------------------------------------------------------------------
+  # ENABLE TRIVY SCANNER
+  # ---------------------------------------------------------------------------
+  # When enabled, Trivy runs as a separate deployment and registers itself
+  # as the default scanner in Harbor.
+  #
+  # ALTERNATIVES:
+  # Harbor supports pluggable scanners (Clair, Anchore, etc.) but Trivy
+  # is the recommended and most actively maintained option.
+  # ---------------------------------------------------------------------------
+  enabled: true
+
+  # ---------------------------------------------------------------------------
+  # AUTO-SCAN ON PUSH
+  # ---------------------------------------------------------------------------
+  # Automatically scan every image immediately after it is pushed.
+  #
+  # WHY ENABLED:
+  # - Eliminates manual scanning steps in CI/CD pipelines
+  # - Ensures every image has a vulnerability assessment
+  # - Scan results are available before anyone pulls the image
+  #
+  # WHEN TO DISABLE:
+  # - Very high push throughput (>1000 images/hour) where scanning
+  #   creates a bottleneck. Use scheduled scans instead.
+  # ---------------------------------------------------------------------------
+  autoScan: true
+
+  # ---------------------------------------------------------------------------
+  # VULNERABILITY DATABASE UPDATE
+  # ---------------------------------------------------------------------------
+  # How often Trivy updates its CVE database (in hours).
+  #
+  # THE DATABASE INCLUDES:
+  #   - NVD (National Vulnerability Database)
+  #   - Vendor advisories (Red Hat, Debian, Ubuntu, Alpine, etc.)
+  #   - GitHub Security Advisories
+  #
+  # UPDATE FREQUENCY GUIDANCE:
+  #   12: Balanced -- catches most new CVEs within half a day
+  #   6:  Aggressive -- for environments with strict SLAs
+  #   24: Conservative -- reduces external network traffic
+  #
+  # REGULATORY CONTEXT (DORA Article 9):
+  # "Timely identification of vulnerabilities" -- frequent DB updates
+  # ensure scanning catches recently disclosed CVEs.
+  # ---------------------------------------------------------------------------
+  vulnDatabaseUpdateDuration: 12
+
+  # ---------------------------------------------------------------------------
+  # SKIP DATABASE UPDATE ON STARTUP
+  # ---------------------------------------------------------------------------
+  # If false, Trivy downloads the latest CVE database on every pod start.
+  # Set to true if the cached database on the PVC is sufficient and you
+  # want faster startup times.
+  #
+  # RECOMMENDATION: false (always get latest DB on restart)
+  # Restarts are infrequent, and having the latest CVE data is important
+  # for regulated environments.
+  # ---------------------------------------------------------------------------
+  skipUpdate: false
+
+  # ---------------------------------------------------------------------------
+  # SCANNER SEVERITY
+  # ---------------------------------------------------------------------------
+  # Which severity levels to include in scan reports.
+  # Harbor displays all levels but can enforce blocking based on severity.
+  #
+  # INCLUDE ALL LEVELS:
+  # Regulated environments need complete visibility. Use Harbor project
+  # policies to block pulls of images with Critical/High CVEs.
+  # ---------------------------------------------------------------------------
+  severity: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL"
+
+  # ---------------------------------------------------------------------------
+  # IGNORE UNFIXED VULNERABILITIES
+  # ---------------------------------------------------------------------------
+  # Whether to exclude CVEs that have no available fix.
+  #
+  # false: Show all CVEs including unfixed (RECOMMENDED for compliance)
+  # true:  Hide CVEs without a fix version
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Complete risk picture" -- unfixed CVEs represent residual risk
+  # that must be tracked and potentially mitigated with compensating controls.
+  # ---------------------------------------------------------------------------
+  ignoreUnfixed: false
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -----------------------------------------------------------------------------
+# NOTARY CONFIGURATION
+# -----------------------------------------------------------------------------
+# Docker Content Trust (Notary) for image signing.
+#
+# STATUS: DEPRECATED in favor of Cosign (Sigstore)
+#
+# WHY COSIGN OVER NOTARY:
+#   1. Simpler workflow: cosign sign vs notary delegation management
+#   2. Keyless signing: Use OIDC identity (no key management overhead)
+#   3. Kyverno integration: Native Cosign verification in admission policies
+#   4. OCI-native: Signatures stored as OCI artifacts alongside images
+#   5. Active community: Sigstore is a CNCF project with broad adoption
+#
+# TO USE COSIGN WITH HARBOR:
+#   # Sign an image after pushing to Harbor
+#   cosign sign --key cosign.key harbor.example.com/regulated-apps/nginx:latest
+#
+#   # Verify a signature
+#   cosign verify --key cosign.pub harbor.example.com/regulated-apps/nginx:latest
+#
+#   # Enforce in Kyverno (see tools/kyverno/ for policy examples)
+#   # ClusterPolicy that verifies Cosign signatures before admission
+# -----------------------------------------------------------------------------
+notary:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# HARBOR PORTAL (WEB UI) CONFIGURATION
+# -----------------------------------------------------------------------------
+# The web interface for managing projects, viewing scan results, configuring
+# replication rules, and managing users/robot accounts.
+# -----------------------------------------------------------------------------
+portal:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# METRICS CONFIGURATION
+# -----------------------------------------------------------------------------
+# Expose Prometheus metrics from all Harbor components.
+#
+# KEY METRICS:
+#   harbor_project_total:             Number of projects
+#   harbor_project_repo_total:        Repositories per project
+#   harbor_artifact_pulled:           Image pull count
+#   harbor_artifact_pushed:           Image push count
+#   harbor_scanner_scan_total:        Scans executed
+#   harbor_scanner_vulnerability_*:   Vulnerability counts by severity
+#   harbor_quota_usage_byte:          Storage usage per project
+#   harbor_system_info:               Harbor version and configuration
+#
+# GRAFANA DASHBOARDS:
+# Community dashboards available at grafana.com (search "Harbor").
+# Custom dashboards for regulated environments should track:
+#   - Unscanned images over time
+#   - Critical/High CVE trends
+#   - Image pull/push audit volume
+#   - Quota utilization per project
+#
+# REGULATORY CONTEXT (SOC 2 CC7.1):
+# "Security event monitoring" -- metrics provide continuous visibility
+# into registry operations and security posture.
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: true
+
+  core:
+    path: /metrics
+    port: 8001
+
+  registry:
+    path: /metrics
+    port: 8001
+
+  jobservice:
+    path: /metrics
+    port: 8001
+
+  exporter:
+    path: /metrics
+    port: 8001
+
+  # ---------------------------------------------------------------------------
+  # SERVICE MONITOR
+  # ---------------------------------------------------------------------------
+  # Creates a Prometheus ServiceMonitor resource for automatic scrape
+  # target discovery. Requires prometheus-operator CRDs.
+  #
+  # Set to true when kube-prometheus-stack is installed.
+  # ---------------------------------------------------------------------------
+  serviceMonitor:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# LOG LEVEL
+# -----------------------------------------------------------------------------
+# Logging verbosity for all Harbor components.
+#
+# LEVELS:
+#   debug:   Verbose -- useful for troubleshooting, noisy in production
+#   info:    Standard operational logging (RECOMMENDED)
+#   warning: Only warnings and errors
+#   error:   Only errors
+#   fatal:   Only fatal errors (not recommended -- too quiet)
+#
+# AUDIT LOGGING:
+# Harbor's audit log is separate from component logs. It records:
+#   - User login/logout events
+#   - Image push/pull operations
+#   - Project creation/deletion
+#   - Policy changes
+#   - Robot account operations
+# Access audit logs via: Harbor UI > Administration > Audit Log
+# Or via API: GET /api/v2.0/audit-logs
+#
+# REGULATORY CONTEXT (NCUA/FFIEC):
+# "Maintain audit trails" -- info level captures operational events;
+# audit logs capture security-relevant actions with user attribution.
+# -----------------------------------------------------------------------------
+logLevel: info
+
+# -----------------------------------------------------------------------------
+# UPDATE STRATEGY
+# -----------------------------------------------------------------------------
+# How Harbor components are updated during Helm upgrades.
+#
+# RollingUpdate: Replaces pods incrementally (zero-downtime for HA setups)
+# Recreate:      Stops all pods, then starts new ones (brief downtime)
+#
+# SINGLE REPLICA (LAB):
+# With replicaCount=1, RollingUpdate still causes brief unavailability
+# because the old pod must terminate before the new one can bind to the PVC.
+# This is acceptable for lab environments.
+#
+# PRODUCTION:
+# Use replicaCount=2+ for Core, Portal, Registry, and Jobservice.
+# Database and Redis should use their own HA mechanisms.
+# -----------------------------------------------------------------------------
+updateStrategy:
+  type: RollingUpdate
+
+# -----------------------------------------------------------------------------
+# CACHE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Cache layer for frequently accessed metadata and manifests.
+# Reduces database load and improves API response times.
+#
+# HOW IT HELPS:
+#   - Manifest lookups are cached (most common registry operation)
+#   - Project metadata is cached (reduces DB queries per request)
+#   - RBAC permission checks are cached (improves auth performance)
+#
+# CACHE INVALIDATION:
+# Cache entries are invalidated on write operations (push, config change).
+# The expireHours setting is a safety net for stale entries.
+# -----------------------------------------------------------------------------
+cache:
+  enabled: true
+  expireHours: 24
+
+# -----------------------------------------------------------------------------
+# GARBAGE COLLECTION
+# -----------------------------------------------------------------------------
+# When images are deleted from Harbor, the underlying blob storage is not
+# immediately reclaimed. Garbage collection (GC) identifies and removes
+# unreferenced blobs.
+#
+# GC MODES:
+#   - Manual: Triggered via UI or API (Administration > Garbage Collection)
+#   - Scheduled: Runs on a cron schedule
+#
+# WHEN TO RUN GC:
+#   - After bulk image deletions
+#   - After tag retention policy execution
+#   - On a regular schedule (weekly is common)
+#
+# CAUTION:
+# GC locks the registry during execution. Schedule during low-traffic
+# periods. Duration depends on registry size (minutes to hours).
+#
+# STORAGE RECLAMATION:
+# GC is the only way to reclaim disk space after image deletion.
+# Without GC, deleted image layers remain on disk indefinitely.
+# -----------------------------------------------------------------------------
+# Garbage collection is configured via Harbor UI after installation:
+# Administration > Garbage Collection > Schedule
+
+# -----------------------------------------------------------------------------
+# NODE SELECTOR AND TOLERATIONS
+# -----------------------------------------------------------------------------
+# Schedule Harbor pods on specific node pools.
+#
+# AKS NODE POOL STRATEGY:
+#   System pool: Kubernetes system components only
+#   User pool:   Application workloads
+#   Infra pool:  Shared infrastructure (Harbor, monitoring, etc.)
+#
+# If using dedicated infrastructure nodes:
+#   nodeSelector:
+#     agentpool: infra
+#   tolerations:
+#     - key: "workload"
+#       operator: "Equal"
+#       value: "infrastructure"
+#       effect: "NoSchedule"
+# -----------------------------------------------------------------------------
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

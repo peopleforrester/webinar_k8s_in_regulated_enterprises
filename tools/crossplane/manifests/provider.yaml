@@ -1,0 +1,175 @@
+# ABOUTME: Crossplane Provider and ProviderConfig for Azure using Workload Identity.
+# ABOUTME: Installs the Upbound provider family for network and database resources.
+# =============================================================================
+# CROSSPLANE AZURE PROVIDERS
+# =============================================================================
+# This manifest installs the Azure provider packages and configures
+# authentication via Azure Workload Identity (federated credentials).
+#
+# PROVIDER FAMILY MODEL:
+# Upbound's provider-family-azure uses a shared controller with individual
+# resource providers. This means:
+#   - One controller pod handles all Azure API calls
+#   - Each resource provider adds only the CRDs it needs
+#   - Memory and CPU usage are proportional to resource types in use
+#   - Providers can be versioned independently
+#
+# Compare this with the monolithic provider-azure which installs ~800 CRDs
+# and consumes significantly more memory, even if you only use 5 resource
+# types. For regulated environments, minimizing the API surface is both a
+# security and operational best practice.
+#
+# AUTHENTICATION STRATEGY:
+# We use Azure Workload Identity, which federates a Kubernetes service
+# account with an Azure AD (Entra ID) managed identity. This means:
+#   - No client secrets stored in the cluster
+#   - No secret rotation needed
+#   - Azure AD handles token issuance and expiry
+#   - Audit trail in both Kubernetes and Azure AD
+#
+# REGULATORY CONTEXT:
+#   - SOC 2 CC6.1: "No long-lived credentials for infrastructure access"
+#   - NCUA Part 748: "Authentication controls for automated systems"
+#   - DORA Article 9: "Access management for ICT systems"
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PROVIDER: Azure Network
+# -----------------------------------------------------------------------------
+# Manages Azure networking resources:
+#   - Virtual Networks (VNets)
+#   - Subnets
+#   - Network Security Groups (NSGs)
+#   - Private Endpoints
+#   - Private DNS Zones
+#
+# WHY NETWORK PROVIDER:
+# Every regulated database needs private networking. The network provider
+# handles VNet integration, private endpoints, and DNS -- ensuring that
+# databases are never exposed to the public internet.
+#
+# REGULATORY CONTEXT (PCI-DSS Req 1.1):
+# "Network configuration standards must be documented and implemented."
+# Managing network resources through Crossplane ensures all network
+# configurations are declared in Git, reviewed via PR, and continuously
+# reconciled.
+# -----------------------------------------------------------------------------
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-azure-network
+  labels:
+    app.kubernetes.io/part-of: crossplane-azure
+    app.kubernetes.io/managed-by: crossplane
+spec:
+  # Package reference in OCI format.
+  # The provider controller and CRDs are distributed as an OCI image.
+  package: xpkg.upbound.io/upbound/provider-azure-network:v1.10.0
+  # revisionActivationPolicy controls how new provider versions are handled:
+  #   Automatic: New revisions become active immediately (good for dev)
+  #   Manual:    New revisions require manual activation (good for prod)
+  revisionActivationPolicy: Automatic
+  # revisionHistoryLimit controls how many old revisions are kept.
+  # Keeping 1 old revision allows quick rollback if an upgrade breaks.
+  revisionHistoryLimit: 1
+  # runtimeConfigRef points to a DeploymentRuntimeConfig if you need to
+  # customize the provider pod (e.g., add tolerations, node selectors).
+  # Omitted here for simplicity; see Crossplane docs for advanced config.
+
+# -----------------------------------------------------------------------------
+# PROVIDER: Azure Database for PostgreSQL
+# -----------------------------------------------------------------------------
+# Manages Azure Database for PostgreSQL resources:
+#   - Flexible Servers
+#   - Databases
+#   - Firewall Rules
+#   - Server Configurations
+#
+# WHY POSTGRESQL PROVIDER:
+# PostgreSQL is the most common database for regulated workloads due to
+# its maturity, compliance features (row-level security, audit logging),
+# and broad ecosystem support. Azure Database for PostgreSQL Flexible
+# Server provides managed HA, backups, and encryption.
+#
+# REGULATORY CONTEXT (NCUA Part 748):
+# "Data storage systems must implement appropriate security controls."
+# Crossplane ensures every database instance is provisioned with the
+# required security controls (SSL, encryption, audit logging) via
+# Compositions, preventing human error in manual provisioning.
+# -----------------------------------------------------------------------------
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-azure-dbforpostgresql
+  labels:
+    app.kubernetes.io/part-of: crossplane-azure
+    app.kubernetes.io/managed-by: crossplane
+spec:
+  package: xpkg.upbound.io/upbound/provider-azure-dbforpostgresql:v1.10.0
+  revisionActivationPolicy: Automatic
+  revisionHistoryLimit: 1
+
+# -----------------------------------------------------------------------------
+# PROVIDER CONFIG: Azure Workload Identity
+# -----------------------------------------------------------------------------
+# ProviderConfig tells the providers HOW to authenticate with Azure.
+#
+# WORKLOAD IDENTITY FLOW:
+# 1. The provider pod runs with a Kubernetes service account
+# 2. The service account is annotated with an Azure client ID
+# 3. Azure AD issues a short-lived token via OIDC federation
+# 4. The provider uses this token for Azure API calls
+# 5. Tokens are rotated automatically (typically every hour)
+#
+# PREREQUISITES:
+# Before this ProviderConfig works, you need:
+#   1. AKS cluster with OIDC issuer enabled
+#   2. Azure Managed Identity created
+#   3. Federated credential linking the K8s SA to the Managed Identity
+#   4. Azure RBAC roles assigned to the Managed Identity
+#
+# The Terraform in infrastructure/terraform/ handles prerequisites 1-4.
+#
+# ALTERNATIVE: Service Principal Secret
+# If Workload Identity is not available, you can use a Service Principal:
+#   credentials:
+#     source: Secret
+#     secretRef:
+#       name: azure-credentials
+#       namespace: crossplane-system
+#       key: credentials
+#
+# This is LESS SECURE because:
+#   - Secrets are long-lived and must be rotated manually
+#   - Secrets are stored in etcd (encrypted at rest, but still a risk)
+#   - Secret access must be audited separately
+#
+# REGULATORY CONTEXT (SOC 2 CC6.1):
+# Workload Identity satisfies requirements for:
+#   - Automated credential management
+#   - Short-lived tokens (reduced blast radius)
+#   - No shared or static credentials
+#   - Audit trail via Azure AD sign-in logs
+# -----------------------------------------------------------------------------
+---
+apiVersion: azure.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  labels:
+    app.kubernetes.io/part-of: crossplane-azure
+    app.kubernetes.io/managed-by: crossplane
+spec:
+  credentials:
+    # "Upbound" source means Workload Identity via the Upbound provider.
+    # This requires the AKS cluster to have OIDC issuer enabled and a
+    # federated credential configured for the provider's service account.
+    source: Upbound
+  # clientID is the Azure AD application (client) ID of the Managed Identity
+  # that has been granted permissions to manage Azure resources.
+  # Replace this with your actual Managed Identity client ID.
+  clientID: "00000000-0000-0000-0000-000000000000"  # REPLACE with actual client ID
+  subscriptionID: "00000000-0000-0000-0000-000000000000"  # REPLACE with actual subscription ID
+  tenantID: "00000000-0000-0000-0000-000000000000"  # REPLACE with actual tenant ID

@@ -1,0 +1,581 @@
+# =============================================================================
+# LONGHORN HELM CHART VALUES
+# =============================================================================
+# Tool:    Longhorn - Cloud-Native Distributed Block Storage
+# Version: 1.7.x (February 2026)
+# Repo:    https://github.com/longhorn/longhorn
+# Docs:    https://longhorn.io/docs/
+#
+# PURPOSE:
+# Longhorn is a CNCF Incubating project that provides lightweight, reliable,
+# and portable distributed block storage for Kubernetes. It implements
+# replicated storage using containers and microservices, creating a dedicated
+# storage controller for each volume and synchronously replicating data across
+# multiple nodes for high availability.
+#
+# WHY LONGHORN ON AKS?
+# AKS provides Azure Disk CSI as the default block storage. Longhorn adds:
+#   1. Multi-cloud portability (same config on AKS, EKS, GKE)
+#   2. Fine-grained per-volume replica control
+#   3. Built-in backup to Azure Blob / S3 / GCS
+#   4. Per-volume encryption (LUKS)
+#   5. Recurring snapshot/backup scheduling with retention
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Data protection and backup requirements
+#   - DORA Article 11: ICT data integrity management
+#   - DORA Article 12: Backup policies and recovery procedures
+#   - SOC 2 CC6.1: Data protection controls
+#   - SOC 2 A1.2: Backup and recovery mechanisms
+#   - PCI-DSS Req 3: Protect stored cardholder data
+#
+# ARCHITECTURE:
+# Longhorn deploys as:
+#   - longhorn-manager: DaemonSet on every node (orchestration, API)
+#   - longhorn-engine: Per-volume controller + replicas (data path)
+#   - longhorn-ui: Optional web dashboard (Deployment)
+#   - CSI driver: DaemonSet for Kubernetes PV/PVC integration
+#
+# PREREQUISITES:
+#   - open-iscsi must be available on nodes (Ubuntu nodes include it;
+#     AzureLinux nodes may need the package installed separately)
+#   - Each node needs at least one dedicated disk or partition for Longhorn
+#     (default: /var/lib/longhorn on the node's root disk)
+#
+# DEMO vs PRODUCTION:
+# This file is configured for DEMO/DEVELOPMENT use. Production deployments
+# should increase resource limits, tighten CPU guarantees, and enable
+# ServiceMonitor for observability.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# DEFAULT SETTINGS
+# -----------------------------------------------------------------------------
+# These settings control Longhorn's global behavior. They apply to all volumes
+# unless overridden at the StorageClass or individual volume level.
+#
+# IMPORTANT: Many of these settings can be changed at runtime via the Longhorn
+# UI or kubectl, but it is best practice to set them here for reproducibility.
+# -----------------------------------------------------------------------------
+defaultSettings:
+  # ---------------------------------------------------------------------------
+  # DEFAULT REPLICA COUNT
+  # ---------------------------------------------------------------------------
+  # Number of synchronous replicas for each volume.
+  #
+  # HOW REPLICATION WORKS:
+  # Longhorn creates one "controller" (the read/write head) and N-1 "replicas"
+  # on different nodes. Writes are acknowledged only after ALL replicas confirm.
+  # This is synchronous replication -- no data loss on single node failure.
+  #
+  # OPTIONS:
+  #   1: No redundancy. Single node failure loses the volume. Testing only.
+  #   2: Tolerates 1 node failure. Minimum for non-critical workloads.
+  #   3: Tolerates 1 node failure with rebuild headroom. Recommended for
+  #      production and regulated workloads.
+  #
+  # STORAGE COST:
+  # A 10Gi volume with 3 replicas uses 30Gi of raw storage across the cluster.
+  # Plan node disk capacity accordingly.
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "ICT data integrity" requires protection against data loss.
+  # Three replicas provide tolerance for single-node failure plus headroom
+  # for rebuilding a replacement replica before a second failure.
+  # ---------------------------------------------------------------------------
+  defaultReplicaCount: 3
+
+  # ---------------------------------------------------------------------------
+  # BACKUP TARGET
+  # ---------------------------------------------------------------------------
+  # URL of the external backup store. Longhorn backs up volume snapshots to
+  # this target for disaster recovery.
+  #
+  # SUPPORTED TARGETS:
+  #   azblob://<container>@<endpoint>    Azure Blob Storage
+  #   s3://<bucket>@<region>/            Amazon S3 or compatible
+  #   nfs://<server>:/<path>             NFS share
+  #
+  # AZURE BLOB EXAMPLE:
+  # The URL format for Azure Blob is:
+  #   azblob://<container-name>@core.windows.net/
+  #
+  # The storage account name is provided via the credential Secret
+  # (see backupTargetCredentialSecret below).
+  #
+  # BACKUP MECHANICS:
+  # - Backups are incremental (only changed blocks since last backup)
+  # - Each backup is a complete point-in-time recovery target
+  # - Backups can be restored to a different cluster (disaster recovery)
+  # - Azure Blob lifecycle policies can manage long-term retention
+  #
+  # REGULATORY CONTEXT (DORA Article 12):
+  # "Backup policies shall specify the scope, frequency, and retention
+  # of backups." The backup target is the foundation; scheduling and
+  # retention are configured via RecurringJob CRDs.
+  #
+  # SECURITY:
+  # Use private endpoints for Azure Blob to keep backup traffic on the
+  # Azure backbone network. Enable soft delete on the container to
+  # protect against accidental or malicious backup deletion.
+  # ---------------------------------------------------------------------------
+  backupTarget: "azblob://longhorn-backups@core.windows.net/"
+
+  # ---------------------------------------------------------------------------
+  # BACKUP TARGET CREDENTIAL SECRET
+  # ---------------------------------------------------------------------------
+  # Name of the Kubernetes Secret containing credentials to access the
+  # backup target. The Secret must exist in the longhorn-system namespace.
+  #
+  # AZURE BLOB SECRET FORMAT:
+  # The Secret must contain these keys:
+  #   AZBLOB_ACCOUNT_NAME: <storage-account-name>
+  #   AZBLOB_ACCOUNT_KEY:  <storage-account-key>
+  #
+  # Create with:
+  #   kubectl create secret generic longhorn-backup-credential \
+  #     --from-literal=AZBLOB_ACCOUNT_NAME=<account> \
+  #     --from-literal=AZBLOB_ACCOUNT_KEY=<key> \
+  #     -n longhorn-system
+  #
+  # FOR S3 TARGETS:
+  #   AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  #
+  # SECURITY BEST PRACTICE:
+  # Use Azure Managed Identity or Workload Identity instead of static keys
+  # where possible. If using static keys, rotate them regularly and store
+  # the Secret via External Secrets Operator (see tools/external-secrets/).
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # Backup credentials must be protected with the same rigor as the data
+  # they protect. Use RBAC to restrict Secret access.
+  # ---------------------------------------------------------------------------
+  backupTargetCredentialSecret: "longhorn-backup-credential"
+
+  # ---------------------------------------------------------------------------
+  # GUARANTEED INSTANCE MANAGER CPU
+  # ---------------------------------------------------------------------------
+  # Percentage of a node's allocatable CPU reserved for each Longhorn instance
+  # manager (engine manager and replica manager).
+  #
+  # WHAT ARE INSTANCE MANAGERS?
+  # Longhorn runs two types of instance managers per node:
+  #   - Engine instance manager: Manages volume controllers on that node
+  #   - Replica instance manager: Manages volume replicas on that node
+  # Each gets the percentage specified here.
+  #
+  # WHY RESERVE CPU?
+  # Without CPU reservation, a busy application workload can starve I/O
+  # operations, causing:
+  #   - Increased write latency
+  #   - Replica rebuild slowdowns
+  #   - Potential volume detach due to heartbeat timeouts
+  #
+  # SIZING:
+  #   Demo/Dev:  12  (12% per manager, ~24% total per node)
+  #   Production: 15-25 (adjust based on I/O intensity)
+  #   High-IOPS:  25-40 (database workloads, heavy write patterns)
+  #
+  # NOTE: This is a percentage of ONE CPU core, not total node CPU.
+  # A value of 12 means 0.12 CPU (120m) per instance manager.
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "ICT systems shall be designed with sufficient capacity" -- CPU
+  # reservation ensures storage operations remain responsive under load.
+  # ---------------------------------------------------------------------------
+  guaranteedInstanceManagerCPU: 12
+
+  # ---------------------------------------------------------------------------
+  # STORAGE OVER-PROVISIONING PERCENTAGE
+  # ---------------------------------------------------------------------------
+  # How much total volume capacity can exceed actual disk space.
+  #
+  # EXAMPLE:
+  # A node with 100Gi disk space and 200% over-provisioning can host
+  # up to 200Gi of total volume capacity (assuming sparse allocation).
+  #
+  # HOW IT WORKS:
+  # Longhorn uses sparse files, so a 50Gi volume only uses actual disk
+  # space as data is written. Over-provisioning allows creating more
+  # volume capacity than physical disk, betting that not all volumes
+  # fill up simultaneously.
+  #
+  # RISK:
+  # If actual usage exceeds physical capacity, volumes go read-only.
+  # Monitor disk usage and set alerts at 80% utilization.
+  #
+  # 200% is conservative for demo environments where volumes are small.
+  # Production regulated environments may prefer 100-150%.
+  # ---------------------------------------------------------------------------
+  storageOverProvisioningPercentage: 200
+
+  # ---------------------------------------------------------------------------
+  # STORAGE MINIMAL AVAILABLE PERCENTAGE
+  # ---------------------------------------------------------------------------
+  # Minimum free disk space percentage Longhorn will maintain on each node.
+  # Once a node drops below this threshold, Longhorn stops scheduling new
+  # replicas to that node.
+  #
+  # 25% provides comfortable headroom for:
+  #   - Replica rebuilds (temporary double-write during rebuild)
+  #   - Snapshot space before cleanup
+  #   - Operating system and kubelet needs
+  #
+  # REGULATORY CONTEXT (NCUA Appendix B):
+  # "Adequate capacity to support operations" -- prevents storage
+  # exhaustion that would cause application outages.
+  # ---------------------------------------------------------------------------
+  storageMinimalAvailablePercentage: 25
+
+  # ---------------------------------------------------------------------------
+  # DEFAULT DATA LOCALITY
+  # ---------------------------------------------------------------------------
+  # Controls whether Longhorn prefers to schedule the volume controller on
+  # the same node as the consuming pod.
+  #
+  # OPTIONS:
+  #   disabled:    No locality preference (default)
+  #   best-effort: Try to co-locate controller with pod, fall back if needed
+  #   strict-local: Force co-location (volume inaccessible if pod moves)
+  #
+  # WHY BEST-EFFORT?
+  # Co-locating the controller with the pod eliminates one network hop for
+  # reads, reducing latency. "best-effort" gives the benefit without
+  # sacrificing availability -- if the node is full, Longhorn places the
+  # controller elsewhere.
+  #
+  # STRICT-LOCAL WARNING:
+  # Only use strict-local for single-node dev environments. In production,
+  # strict-local prevents pod rescheduling to other nodes.
+  # ---------------------------------------------------------------------------
+  defaultDataLocality: "best-effort"
+
+  # ---------------------------------------------------------------------------
+  # REPLICA AUTO-BALANCE
+  # ---------------------------------------------------------------------------
+  # Automatically rebalance replicas across nodes when the cluster topology
+  # changes (e.g., node added, node removed, node comes back online).
+  #
+  # OPTIONS:
+  #   disabled:    No automatic rebalancing
+  #   least-effort: Rebalance only when replica count is uneven
+  #   best-effort: Actively rebalance for optimal distribution
+  #
+  # WHY BEST-EFFORT?
+  # After a node failure and recovery, replicas may be unevenly distributed.
+  # Auto-rebalancing ensures data durability is restored across all nodes
+  # without manual intervention.
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "Automated recovery mechanisms" -- auto-rebalancing restores the
+  # target replica distribution without operator intervention.
+  # ---------------------------------------------------------------------------
+  replicaAutoBalance: "best-effort"
+
+  # ---------------------------------------------------------------------------
+  # CONCURRENT AUTOMATIC ENGINE UPGRADE PER NODE VOLUME COUNT
+  # ---------------------------------------------------------------------------
+  # During Longhorn upgrades, how many volumes per node can be live-upgraded
+  # simultaneously. Higher values speed up the upgrade but increase I/O
+  # disruption risk.
+  #
+  # 0: Disabled (manual upgrade required)
+  # 3: Conservative automatic upgrade for demo
+  # ---------------------------------------------------------------------------
+  concurrentAutomaticEngineUpgradePerNodeLimit: 3
+
+  # ---------------------------------------------------------------------------
+  # NODE DRAIN POLICY
+  # ---------------------------------------------------------------------------
+  # What happens to Longhorn volumes when a node is drained (e.g., during
+  # AKS node pool upgrades).
+  #
+  # OPTIONS:
+  #   block-if-contains-last-replica:
+  #     Prevents drain if the node has the only healthy replica of any volume.
+  #     Safest option -- ensures no data loss during maintenance.
+  #   always-allow:
+  #     Allows drain regardless. May cause volume degradation.
+  #   block-for-eviction:
+  #     Blocks drain until replicas are evicted to other nodes.
+  #     Most disruptive to maintenance but safest for data.
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # "Protection against data loss during maintenance" -- blocking drain
+  # when the last replica would be lost prevents accidental data loss
+  # during routine AKS node pool upgrades.
+  # ---------------------------------------------------------------------------
+  nodeDrainPolicy: "block-if-contains-last-replica"
+
+  # ---------------------------------------------------------------------------
+  # SNAPSHOT DATA INTEGRITY
+  # ---------------------------------------------------------------------------
+  # Enables checksum verification on snapshot data to detect bit rot or
+  # silent data corruption.
+  #
+  # OPTIONS:
+  #   disabled:   No integrity checks
+  #   enabled:    Check on reads (small performance cost)
+  #   fast-check: Check periodically in background
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "Ensure data integrity" -- checksum verification detects corruption
+  # before it propagates to backups or application reads.
+  # ---------------------------------------------------------------------------
+  snapshotDataIntegrity: "fast-check"
+
+  # ---------------------------------------------------------------------------
+  # AUTO CLEANUP SYSTEM GENERATED SNAPSHOT
+  # ---------------------------------------------------------------------------
+  # Longhorn creates system snapshots during operations like replica rebuilds
+  # and volume expansion. This setting cleans them up automatically.
+  #
+  # true:  Clean up system snapshots after the operation completes
+  # false: Keep all system snapshots (consumes disk space)
+  #
+  # Keeping this enabled prevents disk space from filling with operational
+  # snapshots that have no user value.
+  # ---------------------------------------------------------------------------
+  autoCleanupSystemGeneratedSnapshot: true
+
+  # ---------------------------------------------------------------------------
+  # AUTO DELETE POD WHEN VOLUME IS DETACHED UNEXPECTEDLY
+  # ---------------------------------------------------------------------------
+  # If a volume detaches unexpectedly (e.g., node failure), Longhorn can
+  # delete the consuming pod so Kubernetes reschedules it on a healthy node
+  # with the volume reattached.
+  #
+  # true:  Auto-delete pod for faster recovery
+  # false: Leave pod in CrashLoopBackOff (manual intervention)
+  #
+  # REGULATORY CONTEXT (DORA Article 11):
+  # "Recovery procedures shall minimize service disruption" -- automatic
+  # pod deletion enables Kubernetes self-healing to restore service.
+  # ---------------------------------------------------------------------------
+  autoDeletePodWhenVolumeDetachedUnexpectedly: true
+
+# -----------------------------------------------------------------------------
+# PERSISTENCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Controls the default StorageClass that Longhorn creates during installation.
+# -----------------------------------------------------------------------------
+persistence:
+  # ---------------------------------------------------------------------------
+  # DEFAULT STORAGE CLASS
+  # ---------------------------------------------------------------------------
+  # Whether Longhorn's StorageClass should be the cluster default.
+  #
+  # false: Does not set Longhorn as default (recommended when Azure Disk
+  #        CSI is already the default StorageClass on AKS)
+  # true:  Sets Longhorn as the cluster-wide default StorageClass
+  #
+  # RECOMMENDATION:
+  # Keep false on AKS and explicitly reference the Longhorn StorageClass in
+  # PVCs that need distributed storage. This avoids accidentally using
+  # Longhorn for workloads that are fine with Azure Disk.
+  # ---------------------------------------------------------------------------
+  defaultClass: false
+
+  # ---------------------------------------------------------------------------
+  # DEFAULT FILESYSTEM TYPE
+  # ---------------------------------------------------------------------------
+  # Filesystem created on new volumes.
+  #
+  # ext4: Most compatible, well-tested, good for general workloads
+  # xfs:  Better performance for large files, database workloads
+  #
+  # ext4 is the safe default. Switch to xfs for database-heavy workloads
+  # after testing.
+  # ---------------------------------------------------------------------------
+  defaultFsType: ext4
+
+  # ---------------------------------------------------------------------------
+  # DEFAULT STORAGE CLASS REPLICA COUNT
+  # ---------------------------------------------------------------------------
+  # Replica count for the default StorageClass. Mirrors defaultSettings
+  # but can be overridden here specifically for the default class.
+  # ---------------------------------------------------------------------------
+  defaultClassReplicaCount: 3
+
+  # ---------------------------------------------------------------------------
+  # RECLAIM POLICY
+  # ---------------------------------------------------------------------------
+  # What happens to the PersistentVolume when the PVC is deleted.
+  #
+  # Delete: PV and underlying Longhorn volume are deleted (default)
+  # Retain: PV and data are kept; manual cleanup required
+  #
+  # RETAIN FOR REGULATED DATA:
+  # For volumes containing regulated data (PII, financial records), use
+  # Retain to prevent accidental data loss. Data can be reviewed and
+  # securely deleted during a controlled decommissioning process.
+  #
+  # REGULATORY CONTEXT (PCI-DSS Req 3.1):
+  # "Limit cardholder data storage" -- Retain ensures data is not
+  # silently deleted, allowing proper data disposition procedures.
+  # ---------------------------------------------------------------------------
+  reclaimPolicy: Delete
+
+  # ---------------------------------------------------------------------------
+  # ALLOW VOLUME EXPANSION
+  # ---------------------------------------------------------------------------
+  # Whether PVCs using this StorageClass can be resized after creation.
+  #
+  # true:  PVC resize is allowed (kubectl edit pvc -> increase storage)
+  # false: PVC size is fixed at creation
+  #
+  # WHY ENABLE?
+  # Applications grow. Allowing expansion avoids the disruptive process of
+  # creating a new, larger PVC, migrating data, and updating the workload.
+  # Longhorn supports online expansion (no pod restart required).
+  # ---------------------------------------------------------------------------
+  defaultAllowVolumeExpansion: true
+
+# -----------------------------------------------------------------------------
+# INGRESS CONFIGURATION
+# -----------------------------------------------------------------------------
+# Exposes the Longhorn UI via an Ingress resource.
+#
+# SECURITY WARNING:
+# The Longhorn UI provides full administrative access to storage operations
+# including volume deletion, backup management, and cluster settings.
+# Do NOT expose it publicly without authentication.
+#
+# RECOMMENDATION:
+# Keep disabled and use kubectl port-forward for on-demand access:
+#   kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
+#
+# If you must enable Ingress, configure authentication via:
+#   - nginx basic auth annotation
+#   - OAuth2 proxy
+#   - Istio authorization policy
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  # Uncomment and configure if you need persistent Ingress access:
+  # ingressClassName: nginx
+  # host: longhorn.internal.example.com
+  # tls: true
+  # tlsSecret: longhorn-tls
+  # annotations:
+  #   # Basic auth (create secret first):
+  #   # htpasswd -c auth admin
+  #   # kubectl create secret generic longhorn-basic-auth --from-file=auth -n longhorn-system
+  #   nginx.ingress.kubernetes.io/auth-type: basic
+  #   nginx.ingress.kubernetes.io/auth-secret: longhorn-basic-auth
+  #   nginx.ingress.kubernetes.io/auth-realm: "Longhorn Storage Admin"
+
+# -----------------------------------------------------------------------------
+# LONGHORN UI CONFIGURATION
+# -----------------------------------------------------------------------------
+# The Longhorn UI is a web dashboard for managing volumes, nodes, backups,
+# and recurring jobs. It communicates with the longhorn-manager API.
+# -----------------------------------------------------------------------------
+longhornUI:
+  # ---------------------------------------------------------------------------
+  # REPLICA COUNT
+  # ---------------------------------------------------------------------------
+  # Number of UI replicas. The UI is stateless, so multiple replicas
+  # provide availability during node failures.
+  #
+  # 1: Sufficient for demo (UI is not critical path)
+  # 2: Production recommendation for availability
+  # ---------------------------------------------------------------------------
+  replicas: 1
+
+# -----------------------------------------------------------------------------
+# LONGHORN MANAGER RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Resources for the longhorn-manager DaemonSet pods. The manager handles
+# volume orchestration, API serving, and backup coordination.
+#
+# SIZING GUIDANCE:
+#   Small cluster (<10 nodes, <50 volumes):
+#     requests: cpu 100m, memory 256Mi
+#     limits: cpu 500m, memory 512Mi
+#   Medium cluster (10-50 nodes, 50-200 volumes):
+#     requests: cpu 200m, memory 512Mi
+#     limits: cpu 1000m, memory 1Gi
+#   Large cluster (50+ nodes, 200+ volumes):
+#     requests: cpu 500m, memory 1Gi
+#     limits: cpu 2000m, memory 2Gi
+#
+# MONITORING:
+# Watch manager pod resource usage to validate sizing:
+#   kubectl top pods -n longhorn-system -l app=longhorn-manager
+# ---------------------------------------------------------------------------
+longhornManager:
+  tolerations:
+    # -------------------------------------------------------------------------
+    # TOLERATIONS
+    # -------------------------------------------------------------------------
+    # The manager DaemonSet must run on every node that will host volume data.
+    # Tolerate NoSchedule to ensure coverage on tainted nodes (e.g., dedicated
+    # storage nodes, GPU nodes with taints).
+    #
+    # SECURITY NOTE:
+    # Unlike security DaemonSets (Falco), Longhorn only needs to run on nodes
+    # that host storage. If you have dedicated compute-only nodes, you can
+    # skip tolerating their taints.
+    # -------------------------------------------------------------------------
+    - effect: NoSchedule
+      operator: Exists
+
+# -----------------------------------------------------------------------------
+# LONGHORN DRIVER RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Resources for the CSI driver DaemonSet. The driver handles volume mount
+# and unmount operations on each node.
+#
+# CSI DRIVER COMPONENTS:
+#   - csi-attacher: Attaches volumes to nodes
+#   - csi-provisioner: Creates volumes from PVC requests
+#   - csi-resizer: Handles volume expansion
+#   - csi-snapshotter: Creates volume snapshots via CSI
+#   - csi-node-driver-registrar: Registers the Longhorn CSI driver
+# -----------------------------------------------------------------------------
+longhornDriver:
+  tolerations:
+    # -------------------------------------------------------------------------
+    # Same rationale as longhorn-manager: the CSI driver must run on every
+    # node where pods consume Longhorn volumes.
+    # -------------------------------------------------------------------------
+    - effect: NoSchedule
+      operator: Exists
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS SERVICE MONITOR
+# -----------------------------------------------------------------------------
+# Enables Prometheus to scrape Longhorn metrics for observability.
+#
+# KEY METRICS EXPOSED:
+#   longhorn_volume_state:                 Volume health (attached/detached/degraded)
+#   longhorn_volume_actual_size_bytes:     Actual disk usage per volume
+#   longhorn_volume_capacity_bytes:        Provisioned capacity per volume
+#   longhorn_volume_read_throughput:       Volume read IOPS
+#   longhorn_volume_write_throughput:      Volume write IOPS
+#   longhorn_volume_read_latency:          Read latency (microseconds)
+#   longhorn_volume_write_latency:         Write latency (microseconds)
+#   longhorn_node_storage_capacity_bytes:  Total node storage capacity
+#   longhorn_node_storage_usage_bytes:     Used storage per node
+#   longhorn_node_storage_reservation:     Reserved storage per node
+#   longhorn_backup_state:                 Backup job status
+#   longhorn_backup_actual_size_bytes:     Backup size in external store
+#
+# ALERTING RECOMMENDATIONS:
+# Configure Prometheus alerts for:
+#   - longhorn_volume_state != "attached" for >5m: P1 (volume unhealthy)
+#   - longhorn_node_storage_usage > 80% capacity: P2 (disk filling)
+#   - longhorn_backup_state == "Error": P2 (backup failure)
+#   - longhorn_volume_write_latency > 10ms sustained: P3 (performance)
+#   - longhorn_volume_robustness != "healthy": P1 (degraded replication)
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Detection capabilities shall be tested regularly" -- storage metrics
+# enable continuous validation that data protection is working.
+# -----------------------------------------------------------------------------
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
+metrics:
+  serviceMonitor:
+    enabled: false

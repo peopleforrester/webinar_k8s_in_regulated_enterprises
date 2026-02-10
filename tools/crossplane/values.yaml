@@ -1,0 +1,441 @@
+# ABOUTME: Helm values for crossplane-stable/crossplane in a regulated AKS environment.
+# ABOUTME: Lab-sized config with educational comments explaining each setting and its regulatory context.
+# =============================================================================
+# CROSSPLANE HELM CHART VALUES - Development/Demo Configuration
+# =============================================================================
+# Chart:   crossplane-stable/crossplane
+# Repo:    https://github.com/crossplane/crossplane
+# Docs:    https://docs.crossplane.io/
+#
+# PURPOSE:
+# Crossplane is a CNCF Incubating project that extends Kubernetes into a
+# universal control plane for cloud infrastructure. Instead of running
+# Terraform from a CI pipeline, Crossplane runs inside the cluster as a
+# controller that continuously reconciles your desired infrastructure state
+# against reality.
+#
+# WHY CROSSPLANE FOR REGULATED INDUSTRIES?
+# 1. Continuous drift detection and correction (configuration compliance)
+# 2. All infrastructure changes are Kubernetes API calls (full audit trail)
+# 3. RBAC controls who can provision what infrastructure (least privilege)
+# 4. Compositions enforce compliance controls automatically (guardrails)
+# 5. GitOps-compatible: infrastructure definitions live in Git (change mgmt)
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: "Change management controls for IT systems"
+#   - SOC 2 CC7.1: "Infrastructure changes are authorized and documented"
+#   - DORA Article 11: "ICT infrastructure provisioning and management"
+#   - PCI-DSS Req 1.1: "Network configuration standards"
+#   - PCI-DSS Req 2.2: "System configuration standards"
+#
+# ARCHITECTURE:
+# Crossplane installs two Deployments:
+#   1. crossplane: The core controller manager that reconciles XRs, Claims,
+#      and Managed Resources.
+#   2. crossplane-rbac-manager: Generates ClusterRoles for Composite
+#      Resources so RBAC "just works" for Claims.
+#
+# Providers (Azure, AWS, GCP) are installed separately as Packages that
+# register their own CRDs and controllers.
+#
+# DEMO vs PRODUCTION:
+# This file is configured for DEMO/DEVELOPMENT use with conservative
+# resource limits and relaxed polling. Production environments should
+# increase resources and tighten security settings.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CROSSPLANE CONTROLLER MANAGER - RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# The controller manager is the brain of Crossplane. It watches for changes
+# to Composite Resources (XRs) and Claims, then creates/updates/deletes the
+# underlying Managed Resources via the appropriate Provider.
+#
+# RESOURCE SIZING GUIDANCE:
+#   The controller manager's resource needs scale with:
+#   - Number of Managed Resources being reconciled
+#   - Number of installed Providers (each adds CRD watches)
+#   - Reconciliation frequency (poll interval)
+#
+#   Small cluster (<50 managed resources):
+#     requests: cpu 100m, memory 256Mi
+#     limits:   cpu 500m, memory 512Mi
+#
+#   Medium cluster (50-500 managed resources):
+#     requests: cpu 250m, memory 512Mi
+#     limits:   cpu 1000m, memory 1Gi
+#
+#   Large cluster (500+ managed resources):
+#     requests: cpu 500m, memory 1Gi
+#     limits:   cpu 2000m, memory 2Gi
+#
+# REGULATORY CONTEXT (DORA Article 11):
+# Adequate resources ensure the control plane remains responsive and
+# infrastructure drift is corrected within the expected time window.
+# Under-provisioned controllers may fall behind on reconciliation,
+# leaving infrastructure in a non-compliant state longer than acceptable.
+#
+# MONITORING:
+# Watch these metrics to validate sizing:
+#   - controller_runtime_reconcile_total: Reconciliation throughput
+#   - controller_runtime_reconcile_errors_total: Errors indicate issues
+#   - go_memstats_alloc_bytes: Memory pressure indicator
+#   - process_cpu_seconds_total: CPU utilization
+# -----------------------------------------------------------------------------
+resourcesCrossplane:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# RBAC MANAGER - RESOURCE CONFIGURATION
+# -----------------------------------------------------------------------------
+# The RBAC Manager watches for new XRDs and Compositions, then automatically
+# generates ClusterRoles and ClusterRoleBindings so that users who can create
+# Claims can also view the status of their Composite Resources.
+#
+# WHY THIS MATTERS FOR COMPLIANCE:
+# Without the RBAC Manager, platform teams would need to manually create
+# RBAC rules every time they define a new Composition. This is error-prone
+# and creates access control gaps. The RBAC Manager ensures that the
+# principle of least privilege is maintained automatically.
+#
+# RESOURCE SIZING:
+# The RBAC Manager is lightweight -- it only runs when XRDs change, which
+# is infrequent in stable environments. Demo settings are adequate for
+# most clusters.
+#
+# REGULATORY CONTEXT (SOC 2 CC6.1):
+# "Logical access security controls are in place." Automated RBAC
+# generation ensures access controls keep pace with infrastructure
+# abstractions without manual intervention.
+# -----------------------------------------------------------------------------
+resourcesRBACManager:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# CROSSPLANE CONTROLLER ARGUMENTS
+# -----------------------------------------------------------------------------
+# These arguments are passed directly to the Crossplane controller binary.
+# They control reconciliation behavior, polling frequency, and concurrency.
+# -----------------------------------------------------------------------------
+args:
+  # ---------------------------------------------------------------------------
+  # Poll Interval
+  # ---------------------------------------------------------------------------
+  # How often Crossplane checks each Managed Resource against the cloud API
+  # to detect and correct drift.
+  #
+  # HOW IT WORKS:
+  # Every poll-interval, the controller queries the cloud provider API for
+  # each Managed Resource to compare actual state vs desired state. If drift
+  # is detected, the controller issues an update to bring the resource back
+  # into compliance.
+  #
+  # TRADE-OFFS:
+  #   Shorter interval (e.g., 1m):
+  #     + Faster drift detection and correction
+  #     - More API calls (risk of throttling on Azure/AWS/GCP)
+  #     - Higher CPU usage on the controller
+  #
+  #   Longer interval (e.g., 10m):
+  #     + Fewer API calls, less risk of throttling
+  #     + Lower resource usage
+  #     - Drift goes undetected longer
+  #
+  # DEFAULT: 1m (60 seconds)
+  # This means if someone manually changes an Azure resource via the portal,
+  # Crossplane will detect and revert the change within 60 seconds.
+  #
+  # REGULATORY CONTEXT (NCUA Part 748):
+  # Infrastructure drift represents unauthorized changes. The poll interval
+  # determines the maximum window during which unauthorized changes persist.
+  # For most compliance frameworks, 60 seconds is more than adequate.
+  #
+  # AZURE API THROTTLING NOTE:
+  # Azure Resource Manager has rate limits (typically 12000 reads/hour per
+  # subscription). With 100 managed resources at 1m interval, that's 6000
+  # reads/hour -- comfortably within limits. Scale calculations accordingly.
+  # ---------------------------------------------------------------------------
+  - --poll-interval=1m
+
+  # ---------------------------------------------------------------------------
+  # Max Reconcile Rate
+  # ---------------------------------------------------------------------------
+  # Maximum number of resources reconciled per second across all providers.
+  #
+  # HOW IT WORKS:
+  # This acts as a global rate limiter for Crossplane's reconciliation loop.
+  # When many resources need reconciliation simultaneously (e.g., after a
+  # Composition update or cluster restart), this prevents a thundering herd
+  # of API calls from overwhelming the cloud provider.
+  #
+  # SIZING:
+  #   10:  Safe for demos and small environments
+  #   50:  Medium environments (100-500 resources)
+  #   100: Large environments (500+ resources, requires API limit increases)
+  #
+  # WARNING:
+  # Setting this too high can trigger Azure API throttling (HTTP 429 errors),
+  # which causes exponential backoff and actually slows down reconciliation.
+  # Start conservative and increase based on observed API utilization.
+  #
+  # REGULATORY CONTEXT (SOC 2 CC7.1):
+  # Rate limiting prevents operational incidents caused by API throttling,
+  # which could delay drift correction and leave infrastructure non-compliant.
+  # ---------------------------------------------------------------------------
+  - --max-reconcile-rate=10
+
+# -----------------------------------------------------------------------------
+# REPLICAS
+# -----------------------------------------------------------------------------
+# Number of Crossplane controller manager replicas.
+#
+# DEMO: 1 replica is sufficient for development and demonstrations.
+#
+# PRODUCTION CONSIDERATIONS:
+# Crossplane supports leader election, so you can run multiple replicas for
+# high availability. Only one replica actively reconciles at a time; the
+# others are standby.
+#
+#   1 replica:  Sufficient for dev/staging, simpler operations
+#   2 replicas: HA for production, automatic failover
+#
+# REGULATORY CONTEXT (DORA Article 11):
+# Production infrastructure control planes should be highly available.
+# If the Crossplane controller is down, drift detection stops and new
+# infrastructure cannot be provisioned. For regulated environments,
+# 2 replicas with pod anti-affinity is recommended.
+# -----------------------------------------------------------------------------
+replicas: 1
+
+# -----------------------------------------------------------------------------
+# RBAC MANAGER REPLICAS
+# -----------------------------------------------------------------------------
+# Number of RBAC Manager replicas. Same HA considerations as the main
+# controller, but less critical since RBAC changes are infrequent.
+#
+# DEMO: 1 replica
+# PRODUCTION: 2 replicas with leader election
+# -----------------------------------------------------------------------------
+rbacManager:
+  replicas: 1
+
+# -----------------------------------------------------------------------------
+# PACKAGE CACHE
+# -----------------------------------------------------------------------------
+# Crossplane downloads Provider and Configuration packages (OCI images) and
+# caches them locally. This setting controls the cache storage.
+#
+# sizeLimit: Maximum size of the package cache
+#
+# HOW IT WORKS:
+# Providers are distributed as OCI images (similar to container images).
+# When you install a Provider, Crossplane pulls the image and extracts the
+# CRDs and controller binary. The cache prevents re-downloading on pod
+# restarts.
+#
+# SIZING:
+# Each provider family is roughly 50-100MB. With 3-5 providers installed,
+# 512Mi to 1Gi is adequate.
+#
+# DEMO: 512Mi is sufficient for the Azure provider family
+# PRODUCTION: 1Gi to accommodate multiple providers and versions
+#
+# NOTE: The cache uses an emptyDir volume by default. For production,
+# consider using a PersistentVolumeClaim for cache persistence across
+# pod restarts (reduces startup time and network traffic).
+# -----------------------------------------------------------------------------
+packageCache:
+  sizeLimit: 512Mi
+  # pvc: ""  # Uncomment and set to use a PVC for persistent cache
+
+# -----------------------------------------------------------------------------
+# LEADER ELECTION
+# -----------------------------------------------------------------------------
+# Leader election ensures only one replica actively reconciles resources
+# when running multiple replicas. This prevents duplicate API calls and
+# conflicting updates.
+#
+# DEMO: Enabled even with 1 replica (no overhead, enables safe scaling)
+# PRODUCTION: Required with 2+ replicas
+#
+# HOW IT WORKS:
+# Crossplane uses Kubernetes Lease objects for leader election. The leader
+# periodically renews its lease; if it fails to renew (e.g., pod crash),
+# another replica acquires the lease and takes over reconciliation.
+#
+# REGULATORY CONTEXT (DORA Article 11):
+# Leader election is a component of high availability for the
+# infrastructure control plane.
+# -----------------------------------------------------------------------------
+leaderElection: true
+
+# -----------------------------------------------------------------------------
+# WEBHOOK CONFIGURATION
+# -----------------------------------------------------------------------------
+# Crossplane webhooks validate and mutate Composite Resources and Claims
+# before they are persisted to etcd. This provides early feedback on
+# invalid configurations.
+#
+# enabled: Whether to install the webhook server
+#
+# WHY WEBHOOKS MATTER FOR COMPLIANCE:
+# Webhooks catch invalid infrastructure requests before they reach the
+# cloud provider. For example, a Claim requesting a database without
+# encryption would be rejected at admission time, not after a failed
+# API call. This provides faster feedback and prevents partially
+# provisioned (non-compliant) resources.
+#
+# DEMO: Enabled for validation
+# PRODUCTION: Enabled (essential for guardrails)
+# -----------------------------------------------------------------------------
+webhooks:
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# DEPLOYMENT STRATEGY
+# -----------------------------------------------------------------------------
+# Controls how Crossplane pods are updated during upgrades.
+#
+# Recreate: Kill old pod, then start new pod (brief downtime)
+# RollingUpdate: Start new pod, then kill old pod (zero downtime)
+#
+# DEMO: Recreate is simpler and avoids any split-brain during upgrades
+# PRODUCTION: RollingUpdate with 2+ replicas for zero-downtime upgrades
+#
+# NOTE: Even with Recreate strategy, downtime only affects new
+# reconciliation cycles. Already-provisioned infrastructure is not
+# affected by controller downtime.
+# -----------------------------------------------------------------------------
+deploymentStrategy: Recreate
+
+# -----------------------------------------------------------------------------
+# POD SECURITY CONTEXT
+# -----------------------------------------------------------------------------
+# Security context for Crossplane pods. These settings enforce least-
+# privilege principles for the controller and RBAC manager pods.
+#
+# SECURITY HARDENING:
+#   runAsNonRoot:            Prevents running as root user
+#   runAsUser/runAsGroup:    Specific UID/GID (65532 = nonroot in distroless)
+#   allowPrivilegeEscalation: Prevents gaining additional privileges
+#   readOnlyRootFilesystem:  Prevents writes to container filesystem
+#   seccompProfile:          Restricts available syscalls
+#
+# REGULATORY CONTEXT (PCI-DSS Req 2.2):
+# "System configuration standards should include... restricting
+# unnecessary default accounts and functions." Running as non-root
+# with a read-only filesystem and restricted capabilities is the
+# baseline for all regulated workloads.
+#
+# NOTE: Provider pods have their own security contexts defined in
+# the Provider package. The Upbound provider family runs as non-root
+# by default.
+# -----------------------------------------------------------------------------
+securityContextCrossplane:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContextRBACManager:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS METRICS
+# -----------------------------------------------------------------------------
+# Crossplane exposes Prometheus-compatible metrics on port 8080 for
+# monitoring reconciliation performance and health.
+#
+# KEY METRICS:
+#   controller_runtime_reconcile_total:
+#     Total reconciliation attempts, labeled by controller and result.
+#     Use to track reconciliation throughput and error rates.
+#
+#   controller_runtime_reconcile_time_seconds:
+#     Histogram of reconciliation duration. Increasing times indicate
+#     growing infrastructure complexity or API latency.
+#
+#   controller_runtime_reconcile_errors_total:
+#     Failed reconciliations. Any sustained increase is a P1 alert.
+#
+#   workqueue_depth:
+#     Items waiting to be reconciled. Sustained depth > 0 means the
+#     controller is falling behind.
+#
+# ALERTING RECOMMENDATIONS:
+#   - reconcile_errors_total increasing over 5m: P2 alert
+#   - workqueue_depth > 10 for 5m: P2 alert
+#   - reconcile_time_seconds p99 > 30s: P3 alert
+#
+# REGULATORY CONTEXT (DORA Article 10):
+# "Detection capabilities shall be tested regularly." Metrics enable
+# continuous validation that infrastructure reconciliation is working
+# and drift is being corrected within expected timeframes.
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: true
+
+# Requires prometheus-operator CRDs (ServiceMonitor). Set to true if
+# prometheus-operator is installed in your cluster.
+serviceMonitor:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# PROVIDER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Providers are NOT installed via the Helm chart. Instead, they are installed
+# as Crossplane Packages using kubectl apply. See manifests/provider.yaml
+# for the Provider and ProviderConfig resources.
+#
+# This section documents the provider strategy for reference:
+#
+# PROVIDER FAMILY MODEL (Recommended):
+#   Upbound's provider-family-azure installs a shared controller and lets
+#   you selectively install only the resource providers you need:
+#     - provider-azure-network:         VNets, Subnets, NSGs
+#     - provider-azure-dbforpostgresql: PostgreSQL Flexible Server
+#     - provider-azure-keyvault:        Key Vault, Secrets, Keys
+#     - provider-azure-storage:         Storage Accounts, Containers
+#
+#   This is more efficient than the monolithic provider-azure because:
+#     1. Fewer CRDs loaded (faster API server)
+#     2. Smaller memory footprint
+#     3. Faster startup times
+#     4. Independent versioning per resource type
+#
+# MONOLITHIC MODEL (Legacy):
+#   provider-azure installs ALL Azure resource types. Simpler but heavier.
+#   Not recommended for production due to CRD bloat (~800 CRDs).
+#
+# AUTHENTICATION:
+#   Providers authenticate to Azure using one of:
+#     1. Workload Identity (RECOMMENDED): Federated credentials, no secrets
+#     2. Service Principal Secret: Client ID/secret stored in K8s Secret
+#     3. System-Assigned Managed Identity: AKS node identity
+#
+#   See manifests/provider.yaml for the ProviderConfig with Workload Identity.
+#
+# REGULATORY CONTEXT (SOC 2 CC6.1):
+# Workload Identity eliminates long-lived credentials, reducing the risk
+# of credential compromise. This aligns with zero-trust principles and
+# satisfies audit requirements for credential rotation.
+# -----------------------------------------------------------------------------

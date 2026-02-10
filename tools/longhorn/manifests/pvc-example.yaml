@@ -1,0 +1,263 @@
+# ABOUTME: Example PVC and Pod manifests demonstrating Longhorn volume lifecycle on AKS.
+# ABOUTME: Includes standard and encrypted PVC examples with a consumer Pod for each.
+#
+# =============================================================================
+# LONGHORN PVC AND POD EXAMPLES
+# =============================================================================
+# These manifests demonstrate how to consume Longhorn storage in Kubernetes.
+# They are educational examples -- adapt namespaces, sizes, and mount paths
+# for your application.
+#
+# STORAGE LIFECYCLE:
+#   1. PVC is created, referencing a Longhorn StorageClass
+#   2. Pod is created, referencing the PVC in its volumes
+#   3. Kubernetes scheduler places the pod on a node
+#   4. Longhorn CSI driver provisions the volume (WaitForFirstConsumer)
+#   5. Volume is formatted (ext4), mounted into the pod
+#   6. Longhorn replicates data synchronously to 3 nodes
+#   7. Recurring jobs take snapshots and backups automatically
+#   8. When PVC is deleted, reclaimPolicy determines data fate
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Data storage must be protected and recoverable
+#   - DORA Article 11: Data integrity throughout its lifecycle
+#   - SOC 2 A1.2: Recovery mechanisms must be tested
+# =============================================================================
+
+# =============================================================================
+# STANDARD PVC EXAMPLE
+# =============================================================================
+# A basic PersistentVolumeClaim using the longhorn-standard StorageClass.
+# Suitable for application data, logs, and non-sensitive stateful workloads.
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-standard
+  namespace: demo
+  labels:
+    app.kubernetes.io/part-of: longhorn-demo
+    app.kubernetes.io/component: storage
+  annotations:
+    # -------------------------------------------------------------------------
+    # ANNOTATIONS
+    # -------------------------------------------------------------------------
+    # Annotations on PVCs are informational. They help operators understand
+    # what the volume is for when running kubectl get pvc -A.
+    # -------------------------------------------------------------------------
+    description: "Standard Longhorn volume for application data"
+spec:
+  # ---------------------------------------------------------------------------
+  # ACCESS MODES
+  # ---------------------------------------------------------------------------
+  # ReadWriteOnce (RWO): Volume can be mounted read-write by a single node.
+  # This is the standard mode for block storage and what Longhorn supports.
+  #
+  # OTHER MODES (reference):
+  #   ReadOnlyMany (ROX):  Multiple nodes can mount read-only
+  #   ReadWriteMany (RWX): Multiple nodes can mount read-write
+  #     Longhorn supports RWX via NFS, but RWO is preferred for performance
+  #     and data consistency.
+  #
+  # REGULATORY CONTEXT:
+  # RWO inherently limits data access to a single node at a time, which
+  # simplifies access control and audit requirements.
+  # ---------------------------------------------------------------------------
+  accessModes:
+    - ReadWriteOnce
+
+  # ---------------------------------------------------------------------------
+  # STORAGE CLASS
+  # ---------------------------------------------------------------------------
+  # References the StorageClass defined in storage-class.yaml.
+  # The StorageClass determines replica count, encryption, and backup policy.
+  # ---------------------------------------------------------------------------
+  storageClassName: longhorn-standard
+
+  # ---------------------------------------------------------------------------
+  # STORAGE SIZE
+  # ---------------------------------------------------------------------------
+  # Requested volume size. Longhorn supports online expansion, so start with
+  # a reasonable estimate and expand later if needed.
+  #
+  # SIZING GUIDANCE:
+  # - Application logs: 5-10Gi
+  # - Database (small): 10-50Gi
+  # - Database (medium): 50-200Gi
+  # - Object storage cache: 50-500Gi
+  #
+  # OVER-PROVISIONING:
+  # Remember that a 10Gi volume with 3 replicas uses 30Gi of raw node storage.
+  # Plan cluster disk capacity accordingly.
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      storage: 10Gi
+
+# =============================================================================
+# STANDARD POD EXAMPLE
+# =============================================================================
+# A pod that mounts the standard PVC. This demonstrates the complete flow
+# from PVC creation to data persistence.
+# =============================================================================
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-standard-demo
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: longhorn-demo
+    app.kubernetes.io/component: standard
+spec:
+  # ---------------------------------------------------------------------------
+  # SECURITY CONTEXT
+  # ---------------------------------------------------------------------------
+  # Run as non-root for security best practices. This aligns with Kyverno
+  # policies (require-run-as-nonroot) and CIS benchmarks.
+  # ---------------------------------------------------------------------------
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  containers:
+    - name: app
+      image: nginx:1.27-alpine
+      # -----------------------------------------------------------------------
+      # VOLUME MOUNT
+      # -----------------------------------------------------------------------
+      # The volume is mounted at /data inside the container. The application
+      # reads and writes to this path; Longhorn handles replication and
+      # persistence transparently.
+      #
+      # MOUNT PATH GUIDELINES:
+      #   /data:     General application data
+      #   /var/lib:  Database data directories
+      #   /var/log:  Persistent log storage
+      #   /backup:   Backup staging area
+      # -----------------------------------------------------------------------
+      volumeMounts:
+        - name: app-data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+
+  # ---------------------------------------------------------------------------
+  # VOLUMES
+  # ---------------------------------------------------------------------------
+  # Links the PVC to a named volume that containers can mount. The
+  # "persistentVolumeClaim.claimName" must match the PVC metadata.name.
+  # ---------------------------------------------------------------------------
+  volumes:
+    - name: app-data
+      persistentVolumeClaim:
+        claimName: app-data-standard
+
+# =============================================================================
+# ENCRYPTED PVC EXAMPLE
+# =============================================================================
+# A PVC using the longhorn-regulated-encrypted StorageClass for data that
+# requires per-volume encryption (PII, financial records, cardholder data).
+#
+# KEY DIFFERENCES FROM STANDARD:
+#   - Uses longhorn-regulated-encrypted StorageClass
+#   - Volume data is LUKS-encrypted on all replicas
+#   - Reclaim policy is Retain (data survives PVC deletion)
+#   - Encryption key stored in a Kubernetes Secret
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-encrypted
+  namespace: demo
+  labels:
+    app.kubernetes.io/part-of: longhorn-demo
+    app.kubernetes.io/component: encrypted-storage
+    compliance.regulated/ncua: "data-protection"
+    compliance.regulated/pci-dss: "requirement-3"
+  annotations:
+    description: "Encrypted Longhorn volume for regulated data"
+spec:
+  accessModes:
+    - ReadWriteOnce
+
+  # ---------------------------------------------------------------------------
+  # ENCRYPTED STORAGE CLASS
+  # ---------------------------------------------------------------------------
+  # The longhorn-regulated-encrypted class adds:
+  #   - LUKS encryption with per-volume key
+  #   - Retain reclaim policy
+  #   - Same 3-replica durability as standard
+  #
+  # WHAT HAPPENS AT MOUNT TIME:
+  # 1. CSI driver retrieves encryption key from the Kubernetes Secret
+  # 2. LUKS device is opened (decrypted)
+  # 3. Filesystem is mounted into the pod
+  # 4. When pod terminates, LUKS device is closed (re-locked)
+  # ---------------------------------------------------------------------------
+  storageClassName: longhorn-regulated-encrypted
+  resources:
+    requests:
+      storage: 10Gi
+
+# =============================================================================
+# ENCRYPTED POD EXAMPLE
+# =============================================================================
+# A pod consuming the encrypted PVC. From the application's perspective,
+# the encrypted volume behaves identically to an unencrypted one -- the
+# encryption is handled transparently by the CSI driver.
+# =============================================================================
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-encrypted-demo
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: longhorn-demo
+    app.kubernetes.io/component: encrypted
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  containers:
+    - name: app
+      image: nginx:1.27-alpine
+      # -----------------------------------------------------------------------
+      # ENCRYPTED VOLUME MOUNT
+      # -----------------------------------------------------------------------
+      # The mount path and usage are identical to the standard volume.
+      # Encryption is transparent to the application -- it reads and writes
+      # plaintext; LUKS handles encryption/decryption at the block level.
+      # -----------------------------------------------------------------------
+      volumeMounts:
+        - name: encrypted-data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+
+  volumes:
+    - name: encrypted-data
+      persistentVolumeClaim:
+        claimName: app-data-encrypted

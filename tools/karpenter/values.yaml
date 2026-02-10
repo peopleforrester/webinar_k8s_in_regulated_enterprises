@@ -1,0 +1,632 @@
+# ABOUTME: Reference Helm values for karpenter-provider-azure on AKS.
+# ABOUTME: AKS manages Karpenter installation; this file documents settings for education.
+# =============================================================================
+# KARPENTER PROVIDER AZURE - REFERENCE VALUES
+# =============================================================================
+# Tool:    Karpenter - High-Performance Kubernetes Node Autoscaler
+# CNCF:    Incubating (donated by AWS to CNCF)
+# Repo:    https://github.com/Azure/karpenter-provider-azure
+# Docs:    https://karpenter.sh/docs/
+#
+# IMPORTANT: AKS MANAGES KARPENTER INSTALLATION
+# Unlike other tools in this repository, you do NOT install Karpenter via Helm
+# on AKS. The AKS managed Karpenter feature handles:
+#   - Controller deployment and lifecycle
+#   - RBAC and service account configuration
+#   - Azure identity and permissions
+#   - Upgrades aligned with AKS Kubernetes versions
+#
+# You enable it with:
+#   az aks update --enable-node-provisioning
+#   (or Terraform: node_provisioning_enabled = true)
+#
+# Your configuration surface is NodePool and AKSNodeClass CRDs, found in
+# the manifests/ directory.
+#
+# THIS FILE EXISTS FOR EDUCATIONAL PURPOSES
+# It documents the karpenter-provider-azure Helm chart values so you
+# understand what AKS configures on your behalf. If you ever need to run
+# Karpenter self-managed (outside AKS managed mode), these values apply.
+#
+# PURPOSE OF KARPENTER:
+# Karpenter replaces cluster-autoscaler with a fundamentally different
+# approach to node scaling:
+#   - Cluster-autoscaler: scales existing node pools (VMSS) up/down
+#   - Karpenter: provisions individual VMs with the optimal size per workload
+#
+# BENEFITS FOR REGULATED ENVIRONMENTS:
+#   1. Faster provisioning (seconds vs minutes) -- reduces pod scheduling
+#      latency, improving SLA compliance
+#   2. Right-sized nodes -- reduces wasted capacity and cost
+#   3. Consolidation -- actively reduces underutilized nodes
+#   4. Disruption budgets -- controlled node lifecycle management
+#   5. Workload isolation -- separate NodePools for regulated workloads
+#
+# REGULATORY CONTEXT:
+#   - NCUA Part 748: Capacity planning for operational resilience
+#   - DORA Article 11: "ICT systems shall maintain adequate capacity"
+#   - SOC 2 CC7.5: Availability -- automated capacity prevents outages
+#   - PCI-DSS 12.3.3: Capacity planning for security system coverage
+#
+# ARCHITECTURE ON AKS:
+# ┌──────────────────────────────────────────────────┐
+# │  AKS Control Plane (managed by Microsoft)        │
+# │                                                  │
+# │  ┌─────────────────────┐                         │
+# │  │ Karpenter Controller │                         │
+# │  │ (managed deployment) │                         │
+# │  └──────────┬──────────┘                         │
+# │             │                                    │
+# │             │ Watches: Pods, NodePools,           │
+# │             │          AKSNodeClasses             │
+# │             │                                    │
+# │             │ Provisions: Azure VMs via           │
+# │             │             VMSS Flex API           │
+# │             │                                    │
+# │             │ Manages: Node lifecycle,            │
+# │             │          consolidation,             │
+# │             │          disruption                 │
+# └─────────────┼────────────────────────────────────┘
+#               │
+#               v
+#  ┌──────────────────────┐
+#  │ AKS Worker Nodes     │
+#  │ (VMSS Flex instances) │
+#  └──────────────────────┘
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CONTROLLER SETTINGS
+# -----------------------------------------------------------------------------
+# These settings control the Karpenter controller behavior. On AKS managed
+# mode, Microsoft configures these. They are documented here for reference and
+# for self-managed installations.
+#
+# WHAT IS THE CONTROLLER?
+# The Karpenter controller is a Kubernetes Deployment that runs in the
+# kube-system namespace. It watches for:
+#   1. Unschedulable pods (pods that kube-scheduler cannot place)
+#   2. NodePool and AKSNodeClass CRDs (your provisioning rules)
+#   3. Existing nodes (for consolidation and lifecycle management)
+#
+# REPLICAS:
+# Two replicas provide high availability. Only one is the active leader at
+# a time (leader election). The standby replica takes over if the leader
+# fails. This is critical for regulated environments where node provisioning
+# must remain available.
+#
+# REGULATORY NOTE (DORA Article 11):
+# "ICT systems must be designed to be resilient" -- running two replicas
+# ensures that the autoscaler itself is not a single point of failure.
+# -----------------------------------------------------------------------------
+controller:
+  replicas: 2
+
+  # ---------------------------------------------------------------------------
+  # RESOURCE REQUESTS AND LIMITS
+  # ---------------------------------------------------------------------------
+  # The controller's own resource requirements. These are modest because the
+  # controller is an API-driven reconciler, not a data-intensive workload.
+  #
+  # WHY SET LIMITS?
+  # Even for infrastructure controllers, resource limits prevent a bug or
+  # memory leak from consuming all node resources and impacting workloads.
+  # This is especially important because the controller runs in kube-system
+  # alongside other critical components.
+  #
+  # SCALING GUIDANCE:
+  # These defaults handle clusters up to ~500 nodes. For larger clusters:
+  #   - Increase memory to 512Mi-1Gi
+  #   - Monitor controller metrics for GC pressure
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # LOGGING
+  # ---------------------------------------------------------------------------
+  # Log level for the Karpenter controller. Options: debug, info, error
+  #
+  # WHY info?
+  # Info level provides visibility into provisioning decisions without the
+  # noise of debug-level scheduling evaluation. For troubleshooting, switch
+  # to debug temporarily.
+  #
+  # AUDIT NOTE:
+  # Karpenter logs every provisioning and termination decision. These logs
+  # should be shipped to your SIEM for audit trail purposes. Each log entry
+  # includes the pod that triggered provisioning, the VM SKU selected, and
+  # the reason for the decision.
+  # ---------------------------------------------------------------------------
+  logLevel: info
+
+  # ---------------------------------------------------------------------------
+  # METRICS
+  # ---------------------------------------------------------------------------
+  # Karpenter exposes Prometheus metrics on /metrics. These metrics are
+  # essential for monitoring provisioning performance and cost.
+  #
+  # KEY METRICS:
+  #   karpenter_nodes_created_total        -- total nodes provisioned
+  #   karpenter_nodes_terminated_total     -- total nodes terminated
+  #   karpenter_pods_startup_duration_seconds -- time from pod creation to running
+  #   karpenter_provisioner_scheduling_duration_seconds -- scheduling latency
+  #   karpenter_nodes_allocatable          -- allocatable resources per node
+  #   karpenter_nodeclaims_disrupted_total -- nodes disrupted by consolidation
+  #
+  # REGULATORY USE:
+  # These metrics feed into SLA dashboards and capacity reports required by
+  # DORA Article 11. Track karpenter_pods_startup_duration_seconds to prove
+  # that capacity is provisioned within SLA bounds.
+  # ---------------------------------------------------------------------------
+  metrics:
+    port: 8080
+
+  # ---------------------------------------------------------------------------
+  # SERVICE ACCOUNT
+  # ---------------------------------------------------------------------------
+  # The Karpenter controller needs permissions to:
+  #   1. Read/write Node objects (provision, cordon, drain, delete)
+  #   2. Read Pod objects (detect unschedulable pods)
+  #   3. Read NodePool and AKSNodeClass CRDs (provisioning rules)
+  #   4. Call Azure APIs to create/delete VMs (via workload identity)
+  #
+  # On AKS managed mode, the service account is configured automatically
+  # with Azure Workload Identity (federated credential). You do not need
+  # to create IAM roles or managed identities manually.
+  #
+  # SELF-MANAGED INSTALLATION:
+  # If running Karpenter outside AKS managed mode, you must configure:
+  #   1. An Azure Managed Identity with VM Contributor + Network Contributor
+  #   2. A federated credential linking the K8s service account to the identity
+  #   3. The identity's client ID in settings.azure.clusterIdentityClientID
+  #
+  # SECURITY NOTE (NCUA least privilege):
+  # The Karpenter identity should ONLY have permissions to manage VMs in
+  # the node resource group (MC_*). Do not grant subscription-wide permissions.
+  # ---------------------------------------------------------------------------
+  serviceAccount:
+    name: karpenter
+    annotations: {}
+    # For self-managed installations with workload identity:
+    # annotations:
+    #   azure.workload.identity/client-id: "<managed-identity-client-id>"
+
+# -----------------------------------------------------------------------------
+# FEATURE GATES
+# -----------------------------------------------------------------------------
+# Feature gates enable or disable specific Karpenter behaviors. These are
+# evolving as Karpenter matures; check the release notes when upgrading.
+#
+# HOW FEATURE GATES WORK:
+# Karpenter follows the Kubernetes feature gate pattern:
+#   Alpha  -> disabled by default, may be removed
+#   Beta   -> enabled by default, may change
+#   Stable -> always enabled, gate removed
+#
+# CAUTION FOR REGULATED ENVIRONMENTS:
+# Only enable stable or beta features in production. Alpha features may
+# have bugs or breaking changes that could impact node provisioning.
+# Document which feature gates are enabled and why, per your change
+# management policy (DORA Article 9).
+# -----------------------------------------------------------------------------
+featureGates:
+  # ---------------------------------------------------------------------------
+  # DRIFT DETECTION
+  # ---------------------------------------------------------------------------
+  # When enabled, Karpenter detects when a node's configuration has drifted
+  # from the desired state defined in the NodePool and AKSNodeClass. Drifted
+  # nodes are replaced with properly configured ones.
+  #
+  # DRIFT SCENARIOS:
+  #   - AKSNodeClass image version changes (OS upgrade)
+  #   - NodePool requirement changes (instance family updates)
+  #   - Security configuration changes
+  #
+  # WHY ENABLE THIS:
+  # Configuration drift is a compliance risk. If a NodePool specifies that
+  # all nodes must use a specific OS image, drift detection ensures that
+  # nodes running an older image are automatically replaced.
+  #
+  # REGULATORY ALIGNMENT (DORA Article 9):
+  # "ICT systems shall be maintained in a secure state" -- drift detection
+  # is an automated compensating control for configuration management.
+  # ---------------------------------------------------------------------------
+  drift: true
+
+  # ---------------------------------------------------------------------------
+  # SPOT-TO-ON-DEMAND FALLBACK
+  # ---------------------------------------------------------------------------
+  # When a spot instance is interrupted (evicted by Azure), Karpenter can
+  # automatically provision an on-demand instance to replace it. This prevents
+  # prolonged pod disruption when spot capacity is unavailable.
+  #
+  # WHY ENABLE THIS:
+  # Spot interruptions are expected. Without fallback, pods on spot nodes
+  # may remain unschedulable until spot capacity returns. For non-regulated
+  # workloads that tolerate spot, this ensures reasonable availability.
+  #
+  # NOTE: This does NOT affect regulated workloads, which should always be
+  # on-demand (configured via the regulated NodePool requirements).
+  # ---------------------------------------------------------------------------
+  spotToOnDemandFallback: true
+
+# -----------------------------------------------------------------------------
+# AZURE-SPECIFIC SETTINGS
+# -----------------------------------------------------------------------------
+# These settings configure how Karpenter interacts with Azure APIs to
+# provision and manage VMs.
+#
+# ON AKS MANAGED MODE:
+# These values are auto-populated by AKS. They are documented here for
+# understanding and for self-managed installations.
+#
+# IMPORTANT: Never hardcode secrets in values files. Use environment
+# variables, Azure Key Vault references, or workload identity.
+# -----------------------------------------------------------------------------
+settings:
+  azure:
+    # -------------------------------------------------------------------------
+    # CLUSTER NAME
+    # -------------------------------------------------------------------------
+    # The AKS cluster name. Used by Karpenter to tag provisioned VMs and
+    # associate them with the correct cluster.
+    #
+    # WHY THIS MATTERS:
+    # Azure VMs provisioned by Karpenter must be tagged with the cluster name
+    # so that:
+    #   1. AKS recognizes them as cluster members
+    #   2. Cost allocation tools (Azure Cost Management) can attribute costs
+    #   3. Cleanup scripts can identify and remove orphaned VMs
+    #
+    # ON AKS MANAGED MODE: Auto-populated from the cluster resource.
+    # -------------------------------------------------------------------------
+    clusterName: "aks-regulated-demo"
+
+    # -------------------------------------------------------------------------
+    # CLUSTER ENDPOINT
+    # -------------------------------------------------------------------------
+    # The Kubernetes API server endpoint. New nodes use this to bootstrap
+    # and join the cluster.
+    #
+    # FORMAT: https://<cluster-fqdn>:443
+    #
+    # HOW NODE BOOTSTRAP WORKS:
+    #   1. Karpenter creates a VM via Azure API
+    #   2. The VM runs a bootstrap script (cloud-init / CSE)
+    #   3. The script configures kubelet to connect to this endpoint
+    #   4. kubelet registers the node with the API server
+    #   5. The node becomes Ready and pods are scheduled
+    #
+    # SECURITY NOTE:
+    # For private clusters, this endpoint is a private IP. Ensure the VNet
+    # configuration allows new nodes to reach the API server.
+    #
+    # ON AKS MANAGED MODE: Auto-populated from the cluster resource.
+    # -------------------------------------------------------------------------
+    clusterEndpoint: ""
+
+    # -------------------------------------------------------------------------
+    # KUBELET CLIENT TLS BOOTSTRAP TOKEN
+    # -------------------------------------------------------------------------
+    # A bootstrap token that new nodes use to authenticate with the API server
+    # during the TLS bootstrapping process.
+    #
+    # TLS BOOTSTRAP FLOW:
+    #   1. New node starts with only the bootstrap token
+    #   2. Node presents the token to the API server
+    #   3. API server issues a short-lived client certificate
+    #   4. Node uses the certificate for all future API communication
+    #   5. Certificate is rotated automatically before expiry
+    #
+    # SECURITY NOTE (NCUA least privilege):
+    # The bootstrap token grants minimal permissions -- only enough to
+    # request a client certificate. It cannot read secrets, list pods, or
+    # perform any cluster operations. The token should be rotated regularly.
+    #
+    # ON AKS MANAGED MODE: Managed automatically by AKS. You do not need
+    # to create or rotate this token.
+    # -------------------------------------------------------------------------
+    kubeletClientTLSBootstrapToken: ""
+
+    # -------------------------------------------------------------------------
+    # SSH PUBLIC KEY
+    # -------------------------------------------------------------------------
+    # SSH public key injected into provisioned nodes for emergency access.
+    #
+    # REGULATED ENVIRONMENT CONSIDERATIONS:
+    #   - SSH access to nodes should be disabled in production
+    #   - If enabled, access must be logged and audited (NCUA Part 748)
+    #   - Use Azure Bastion or JIT VM access instead of direct SSH
+    #   - Key rotation policy must be documented
+    #
+    # WHY IT EXISTS:
+    # Break-glass scenario -- if kubelet is unresponsive and you cannot
+    # exec into pods or view logs, SSH is the last resort for node debugging.
+    #
+    # RECOMMENDATION: Leave empty in production. Use Azure Serial Console
+    # or Bastion for emergency access instead.
+    # -------------------------------------------------------------------------
+    sshPublicKey: ""
+
+    # -------------------------------------------------------------------------
+    # CLUSTER IDENTITY CLIENT ID
+    # -------------------------------------------------------------------------
+    # The Azure Managed Identity client ID that Karpenter uses to call
+    # Azure APIs (create VMs, manage VMSS Flex, query SKU availability).
+    #
+    # REQUIRED PERMISSIONS (least privilege):
+    #   - Microsoft.Compute/virtualMachineScaleSets/* (VMSS Flex management)
+    #   - Microsoft.Compute/virtualMachines/* (VM lifecycle)
+    #   - Microsoft.Network/networkInterfaces/* (NIC management)
+    #   - Microsoft.Network/virtualNetworks/subnets/join/action (VNet join)
+    #
+    # SCOPE: Limit to the node resource group (MC_<rg>_<cluster>_<region>).
+    # Never grant subscription or management group level access.
+    #
+    # ON AKS MANAGED MODE: The kubelet identity is used automatically.
+    # -------------------------------------------------------------------------
+    clusterIdentityClientID: ""
+
+    # -------------------------------------------------------------------------
+    # NETWORK CONFIGURATION
+    # -------------------------------------------------------------------------
+    # Subnet and security group configuration for provisioned nodes.
+    #
+    # VNET INTEGRATION:
+    # Karpenter provisions nodes into the same VNet/subnet as existing AKS
+    # nodes. This ensures:
+    #   1. Pod-to-pod networking works (same overlay or Azure CNI subnet)
+    #   2. Network policies apply consistently
+    #   3. NSG rules cover Karpenter-provisioned nodes
+    #
+    # REGULATORY NOTE (PCI-DSS 1.3):
+    # All nodes must be within the defined network segmentation boundary.
+    # Karpenter nodes inherit the subnet's NSG rules automatically.
+    #
+    # ON AKS MANAGED MODE: Auto-configured from the cluster's node subnet.
+    # -------------------------------------------------------------------------
+    networkPlugin: "azure"
+    networkPolicy: "calico"
+
+    # -------------------------------------------------------------------------
+    # VMSS FLEX CONFIGURATION
+    # -------------------------------------------------------------------------
+    # Karpenter on Azure uses VMSS Flex (Flexible Orchestration) instead of
+    # VMSS Uniform (used by traditional node pools).
+    #
+    # VMSS FLEX vs VMSS UNIFORM:
+    # | Aspect          | VMSS Uniform            | VMSS Flex               |
+    # |-----------------|-------------------------|-------------------------|
+    # | VM sizing       | All VMs same SKU        | Mixed SKUs allowed      |
+    # | Scaling         | Scale set-level         | Individual VM-level     |
+    # | Fault domains   | Managed by VMSS         | Spread across FDs       |
+    # | Use case        | Cluster-autoscaler      | Karpenter               |
+    #
+    # WHY VMSS FLEX:
+    # Karpenter needs to provision individual VMs with different SKUs.
+    # VMSS Uniform requires all VMs in a scale set to be the same size.
+    # VMSS Flex allows mixing -- a single scale set can contain D4s_v5,
+    # D8s_v5, and E4s_v5 VMs based on workload requirements.
+    # -------------------------------------------------------------------------
+    vmssFlex:
+      enabled: true
+
+# -----------------------------------------------------------------------------
+# WEBHOOK CONFIGURATION
+# -----------------------------------------------------------------------------
+# Karpenter uses a validating webhook to validate NodePool and AKSNodeClass
+# resources before they are persisted to etcd.
+#
+# WHY A WEBHOOK?
+# Catching configuration errors at admission time (before the resource is
+# created) prevents invalid provisioning rules from causing runtime failures.
+# For example:
+#   - A NodePool requesting a VM SKU that doesn't exist in the region
+#   - An AKSNodeClass referencing a non-existent subnet
+#   - Conflicting requirements (on-demand AND spot in a single requirement)
+#
+# AVAILABILITY CONCERN:
+# If the webhook is unavailable, NodePool and AKSNodeClass create/update
+# operations will fail. This is intentional -- it is better to reject
+# changes than to accept potentially invalid configurations.
+#
+# ON AKS MANAGED MODE: The webhook is managed by AKS.
+# -----------------------------------------------------------------------------
+webhook:
+  enabled: true
+  port: 8443
+
+# -----------------------------------------------------------------------------
+# GLOBAL SETTINGS
+# -----------------------------------------------------------------------------
+# Cross-cutting settings that affect all Karpenter components.
+# -----------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# BATCH IDLE DURATION
+# ---------------------------------------------------------------------------
+# How long Karpenter waits after the last unschedulable pod before making
+# a provisioning decision. This allows batching multiple pods into a single
+# provisioning decision for better bin-packing.
+#
+# HOW BATCHING WORKS:
+#   1. Pod A becomes unschedulable at T=0
+#   2. Karpenter starts a 10-second timer
+#   3. Pod B becomes unschedulable at T=3
+#   4. Timer resets to 10 seconds from T=3
+#   5. No more pods arrive; timer expires at T=13
+#   6. Karpenter provisions nodes for Pod A + Pod B together
+#
+# WHY BATCH?
+# Without batching, each unschedulable pod triggers a separate provisioning
+# decision. This can result in many small nodes instead of fewer right-sized
+# nodes. Batching improves bin-packing and reduces Azure API calls.
+#
+# TRADE-OFF:
+#   Shorter duration: faster individual pod scheduling, more Azure API calls
+#   Longer duration:  better bin-packing, slower pod scheduling
+#
+# FOR REGULATED ENVIRONMENTS:
+# 10 seconds is a good balance. Pods still schedule within SLA bounds while
+# bin-packing reduces cost.
+# ---------------------------------------------------------------------------
+batchIdleDuration: 10s
+
+# ---------------------------------------------------------------------------
+# BATCH MAX DURATION
+# ---------------------------------------------------------------------------
+# Maximum time Karpenter will wait before making a provisioning decision,
+# regardless of whether new unschedulable pods keep arriving.
+#
+# This prevents unbounded batching in scenarios where pods arrive
+# continuously (e.g., a large Deployment rollout).
+#
+# EXAMPLE:
+#   - A 100-replica Deployment is created
+#   - Pods arrive continuously, resetting the idle timer each time
+#   - Without a max duration, Karpenter would wait until all 100 pods
+#     are pending before provisioning
+#   - With 60s max, Karpenter provisions after 60 seconds even if
+#     more pods are still being created
+# ---------------------------------------------------------------------------
+batchMaxDuration: 60s
+
+# -----------------------------------------------------------------------------
+# NODE LIFECYCLE SETTINGS
+# -----------------------------------------------------------------------------
+# These settings control how Karpenter manages the lifecycle of provisioned
+# nodes, including TTL, expiration, and health checks.
+# -----------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# NODE REGISTRATION TIMEOUT
+# ---------------------------------------------------------------------------
+# Maximum time to wait for a newly provisioned node to register with the
+# API server and become Ready.
+#
+# WHAT HAPPENS DURING REGISTRATION:
+#   1. Azure provisions the VM (usually 30-90 seconds)
+#   2. Cloud-init / CSE runs the bootstrap script
+#   3. Kubelet starts and connects to the API server
+#   4. Kubelet registers the node
+#   5. Node transitions to Ready when all system pods start
+#
+# IF TIMEOUT IS EXCEEDED:
+# Karpenter terminates the node and provisions a replacement. This prevents
+# "zombie" nodes that consume Azure resources but never join the cluster.
+#
+# WHY 15 MINUTES?
+# Azure VM provisioning can take 2-5 minutes in normal conditions. During
+# regional capacity pressure or for larger VM SKUs, provisioning may take
+# longer. 15 minutes provides comfortable headroom.
+#
+# MONITORING:
+# Track the metric karpenter_nodes_creation_duration_seconds to understand
+# your typical node creation time and adjust this timeout accordingly.
+# ---------------------------------------------------------------------------
+nodeRegistrationTimeout: 15m
+
+# ---------------------------------------------------------------------------
+# NODE TERMINATION GRACE PERIOD
+# ---------------------------------------------------------------------------
+# How long Karpenter waits after cordoning a node before force-terminating
+# the VM, allowing pods to drain gracefully.
+#
+# DRAIN PROCESS:
+#   1. Karpenter cordons the node (no new pods scheduled)
+#   2. Karpenter sends DELETE to all non-system pods on the node
+#   3. Pods receive SIGTERM and begin graceful shutdown
+#   4. Karpenter waits up to this duration for pods to terminate
+#   5. If pods are still running, the node is force-terminated
+#
+# REGULATED CONSIDERATION:
+# Financial transaction processing pods may need time to complete
+# in-flight transactions. Set this value based on your longest
+# expected graceful shutdown time.
+#
+# RELATIONSHIP TO POD terminationGracePeriodSeconds:
+# This value should be >= the longest terminationGracePeriodSeconds
+# of any pod on the node, plus a buffer for drain ordering.
+# ---------------------------------------------------------------------------
+nodeTerminationGracePeriod: 300s
+
+# -----------------------------------------------------------------------------
+# INTERRUPTION HANDLING
+# -----------------------------------------------------------------------------
+# How Karpenter handles Azure infrastructure events that affect nodes.
+#
+# AZURE EVENTS THAT KARPENTER HANDLES:
+#   - Spot VM evictions (capacity reclaimed by Azure)
+#   - Scheduled maintenance (host updates, hardware replacement)
+#   - VM health events (hardware failures detected by Azure)
+#
+# HOW IT WORKS:
+# Karpenter polls Azure Scheduled Events API and the Instance Metadata
+# Service (IMDS) for upcoming infrastructure events. When an event is
+# detected:
+#   1. Karpenter cordons the affected node
+#   2. Karpenter provisions a replacement node
+#   3. Pods are drained from the affected node to the replacement
+#   4. The affected node is terminated (or Azure terminates it)
+#
+# WHY THIS MATTERS FOR REGULATED ENVIRONMENTS:
+# Without interruption handling, spot evictions and maintenance events
+# cause abrupt pod termination. With it, Karpenter proactively moves
+# workloads before the disruption occurs.
+#
+# REGULATORY ALIGNMENT (SOC 2 CC7.5):
+# Proactive interruption handling demonstrates that the organization
+# maintains systems "to meet entity objectives related to availability."
+# -----------------------------------------------------------------------------
+interruptionHandling:
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# SERVICE MONITOR (Prometheus integration)
+# -----------------------------------------------------------------------------
+# Creates a ServiceMonitor CRD for Prometheus Operator to scrape Karpenter
+# metrics automatically.
+#
+# PREREQUISITES:
+# Requires kube-prometheus-stack or Prometheus Operator installed in the
+# cluster. Without it, ServiceMonitor CRDs have no effect.
+#
+# KEY KARPENTER METRICS FOR DASHBOARDS:
+#   - karpenter_pods_startup_duration_seconds (scheduling SLA)
+#   - karpenter_nodes_created_total / terminated_total (churn rate)
+#   - karpenter_nodeclaims_disrupted_total (consolidation activity)
+#   - karpenter_provisioner_scheduling_simulation_duration_seconds
+#
+# DISABLED BY DEFAULT:
+# Enable when prometheus-operator is installed. See tools/prometheus/ for
+# the monitoring stack setup.
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  # labels:
+  #   release: prometheus
+
+# -----------------------------------------------------------------------------
+# POD DISRUPTION BUDGET
+# -----------------------------------------------------------------------------
+# Protects the Karpenter controller itself from being disrupted during
+# cluster maintenance or node consolidation.
+#
+# WHY THIS MATTERS:
+# If the Karpenter controller is unavailable, no new nodes can be
+# provisioned. A PDB ensures that at least one controller replica
+# remains available during voluntary disruptions (rolling updates,
+# node drains, etc.).
+#
+# REGULATORY NOTE (DORA Article 11):
+# The autoscaler is itself a critical infrastructure component. Its
+# availability must be protected to ensure continuous capacity management.
+# -----------------------------------------------------------------------------
+podDisruptionBudget:
+  minAvailable: 1

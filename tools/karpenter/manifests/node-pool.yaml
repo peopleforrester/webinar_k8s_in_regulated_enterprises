@@ -1,0 +1,542 @@
+# ABOUTME: Karpenter NodePool and AKSNodeClass for regulated on-demand workloads.
+# ABOUTME: Restricts to D/E-series VMs with conservative disruption and resource limits.
+# =============================================================================
+# KARPENTER NODE POOL - REGULATED WORKLOADS
+# =============================================================================
+#
+# WHAT IS A NODEPOOL?
+# A NodePool defines a set of constraints for nodes that Karpenter provisions.
+# When a pod is unschedulable, Karpenter matches it against all NodePools and
+# selects the best one based on the pod's scheduling requirements (node
+# selectors, affinity, tolerations, resource requests).
+#
+# NODEPOOL vs NODE POOL (AKS terminology):
+# Do not confuse Karpenter's NodePool CRD with AKS "node pools" (VMSS-backed
+# groups of identically-sized VMs). They serve similar purposes but are
+# different mechanisms:
+#   - AKS node pool: A VMSS with fixed VM size, managed by cluster-autoscaler
+#   - Karpenter NodePool: A CRD defining constraints; Karpenter picks the
+#     optimal VM size per workload within those constraints
+#
+# DESIGN DECISION: TWO NODEPOOLS
+# This repository defines two NodePools:
+#   1. regulated-workloads (this file) -- On-demand only, conservative settings
+#   2. cost-optimized (node-pool-spot.yaml) -- Spot VMs for non-sensitive work
+#
+# Pods select their NodePool via labels and node selectors:
+#   - Pods with nodeSelector { workload-tier: regulated } land on this pool
+#   - Pods tolerating the spot taint can use the cost-optimized pool
+#   - Pods without specific selectors default to this pool (on-demand)
+#
+# REGULATORY CONTEXT:
+# Separating regulated and non-regulated workloads onto different node groups
+# supports:
+#   - NCUA: Workload isolation for sensitive financial data processing
+#   - PCI-DSS 2.2: System components in separate security zones
+#   - DORA Art.9: ICT risk management through workload segregation
+#   - SOC 2 CC6.1: Logical access controls at the infrastructure level
+# =============================================================================
+
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: regulated-workloads
+  labels:
+    # -------------------------------------------------------------------------
+    # LABELS
+    # Standard Kubernetes labels for identification and selection.
+    # Compliance labels document which regulatory controls this resource
+    # addresses, making it machine-readable for audit tooling.
+    # -------------------------------------------------------------------------
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: regulated-platform
+    compliance.regulated/ncua: "part-748-resilience"
+    compliance.regulated/dora: "art-11-capacity"
+    compliance.regulated/soc2: "cc7.5-availability"
+spec:
+  # ---------------------------------------------------------------------------
+  # TEMPLATE
+  # ---------------------------------------------------------------------------
+  # The template defines what properties each node provisioned by this
+  # NodePool will have. Think of it as a "node blueprint."
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        # ---------------------------------------------------------------------
+        # NODE LABELS
+        # These labels are applied to every node provisioned by this NodePool.
+        # Pods use nodeSelector or nodeAffinity to target these labels.
+        #
+        # workload-tier: regulated
+        #   Identifies nodes dedicated to regulated workloads. Pods in
+        #   regulated namespaces should have a matching nodeSelector.
+        #
+        # capacity-type: on-demand
+        #   Documents that these nodes are always on-demand (never spot).
+        #   Useful for cost dashboards and audit queries.
+        #
+        # node-lifecycle: karpenter
+        #   Distinguishes Karpenter-provisioned nodes from static AKS node
+        #   pool nodes. Useful during migration from cluster-autoscaler.
+        # ---------------------------------------------------------------------
+        workload-tier: regulated
+        capacity-type: on-demand
+        node-lifecycle: karpenter
+    spec:
+      # -----------------------------------------------------------------------
+      # NODE CLASS REFERENCE
+      # -----------------------------------------------------------------------
+      # Points to the AKSNodeClass that defines Azure-specific settings for
+      # nodes provisioned by this NodePool (OS image, network config, etc.).
+      #
+      # The separation between NodePool (scheduling constraints) and
+      # AKSNodeClass (cloud provider settings) allows you to:
+      #   - Share one AKSNodeClass across multiple NodePools
+      #   - Update Azure settings without changing scheduling rules
+      #   - Keep the NodePool spec cloud-agnostic (portable to EKS/GKE)
+      # -----------------------------------------------------------------------
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: regulated-nodes
+
+      # -----------------------------------------------------------------------
+      # REQUIREMENTS
+      # -----------------------------------------------------------------------
+      # Requirements constrain which VM types Karpenter can select. Karpenter
+      # evaluates all VMs matching these requirements and picks the cheapest
+      # one that satisfies the pending pod's resource requests.
+      #
+      # REQUIREMENT OPERATORS:
+      #   In:       value must be one of the listed options
+      #   NotIn:    value must NOT be one of the listed options
+      #   Exists:   label/key must exist (any value)
+      #   Gt/Lt:    numeric comparison (for generation, vCPU count, etc.)
+      # -----------------------------------------------------------------------
+      requirements:
+        # ---------------------------------------------------------------------
+        # CAPACITY TYPE: ON-DEMAND ONLY
+        # ---------------------------------------------------------------------
+        # For regulated workloads, we ONLY allow on-demand instances.
+        # Spot instances can be interrupted at any time when Azure reclaims
+        # capacity, which is unacceptable for:
+        #   - Financial transaction processing
+        #   - Compliance reporting jobs
+        #   - Security monitoring tools
+        #   - Customer-facing services with strict SLAs
+        #
+        # COST IMPLICATION:
+        # On-demand is 60-80% more expensive than spot. This cost premium is
+        # the price of guaranteed availability for regulated workloads.
+        # Non-regulated workloads use the spot NodePool for cost optimization.
+        # ---------------------------------------------------------------------
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - on-demand
+
+        # ---------------------------------------------------------------------
+        # INSTANCE FAMILIES: D-SERIES AND E-SERIES
+        # ---------------------------------------------------------------------
+        # WHY THESE FAMILIES?
+        #
+        # D-series (General Purpose):
+        #   - Balanced CPU-to-memory ratio (1:4)
+        #   - Suitable for web servers, API gateways, microservices
+        #   - D2s_v5: 2 vCPU, 8 GiB  | D4s_v5: 4 vCPU, 16 GiB
+        #   - D8s_v5: 8 vCPU, 32 GiB | D16s_v5: 16 vCPU, 64 GiB
+        #   - "s" suffix: Premium Storage capable (required for persistent volumes)
+        #
+        # E-series (Memory Optimized):
+        #   - High memory-to-CPU ratio (1:8)
+        #   - Suitable for databases, caching, in-memory analytics
+        #   - E2s_v5: 2 vCPU, 16 GiB  | E4s_v5: 4 vCPU, 32 GiB
+        #   - E8s_v5: 8 vCPU, 64 GiB  | E16s_v5: 16 vCPU, 128 GiB
+        #
+        # EXCLUDED FAMILIES AND WHY:
+        #   B-series: Burstable, unpredictable performance under sustained load
+        #   F-series: Compute-optimized, low memory per vCPU
+        #   L-series: Storage-optimized, high local disk (niche use cases)
+        #   N-series: GPU instances (not needed for typical financial workloads)
+        #   A-series: Previous generation, being deprecated
+        #
+        # REGULATORY NOTE:
+        # Using consistent, non-burstable instance families supports capacity
+        # planning requirements (DORA Art.11) because performance is
+        # predictable and measurable.
+        # ---------------------------------------------------------------------
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values:
+            - "D"
+            - "E"
+
+        # ---------------------------------------------------------------------
+        # INSTANCE SIZES: 2 to 16 vCPUs
+        # ---------------------------------------------------------------------
+        # Constraining the vCPU range prevents Karpenter from selecting
+        # very small VMs (1 vCPU, insufficient for most workloads) or very
+        # large VMs (32+ vCPU, potential blast radius if a node fails).
+        #
+        # SMALLER VMs (2-4 vCPU): Better fault isolation (fewer pods per node)
+        # LARGER VMs (8-16 vCPU): Better bin-packing (more pods, fewer nodes)
+        #
+        # TRADE-OFF:
+        # Regulated environments often prefer smaller nodes for blast radius
+        # reduction. If a node fails, fewer pods are affected. Adjust the
+        # upper bound based on your pod density and failure tolerance.
+        # ---------------------------------------------------------------------
+        - key: karpenter.azure.com/sku-cpu
+          operator: In
+          values:
+            - "2"
+            - "4"
+            - "8"
+            - "16"
+
+        # ---------------------------------------------------------------------
+        # ARCHITECTURE: AMD64
+        # ---------------------------------------------------------------------
+        # Most financial service workloads target x86_64 (AMD64). ARM64
+        # (Ampere) instances are excluded because:
+        #   - Not all container images have ARM builds
+        #   - Third-party vendor software may only support x86_64
+        #   - Consistent architecture simplifies debugging and compliance
+        #
+        # FUTURE CONSIDERATION:
+        # ARM64 instances (Dps_v5 series) offer better price-performance.
+        # If your container images support multi-arch, consider adding arm64
+        # for non-regulated workloads as a FinOps optimization.
+        # ---------------------------------------------------------------------
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
+
+        # ---------------------------------------------------------------------
+        # AVAILABILITY ZONES
+        # ---------------------------------------------------------------------
+        # Karpenter spreads nodes across availability zones for resilience.
+        # AKS clusters in most regions support 3 availability zones.
+        #
+        # WHY ALL THREE ZONES?
+        # Allowing all 3 zones gives Karpenter maximum flexibility to find
+        # capacity. If zone 1 is constrained, Karpenter provisions in zone 2.
+        #
+        # TOPOLOGY SPREAD:
+        # Use pod topology spread constraints to ensure pods are distributed
+        # across zones. Karpenter respects these constraints when selecting
+        # which zone to provision nodes in.
+        #
+        # REGULATORY ALIGNMENT (DORA Article 11):
+        # Multi-zone deployment is a core resilience requirement. Auditors
+        # expect regulated workloads to survive a single zone failure.
+        # ---------------------------------------------------------------------
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - "eastus-1"
+            - "eastus-2"
+            - "eastus-3"
+
+  # ---------------------------------------------------------------------------
+  # RESOURCE LIMITS
+  # ---------------------------------------------------------------------------
+  # Hard caps on the total resources this NodePool can provision. Karpenter
+  # will not provision new nodes if doing so would exceed these limits.
+  #
+  # PURPOSE:
+  # Prevents runaway scaling due to:
+  #   - A misconfigured Deployment with excessive replicas
+  #   - A CronJob that creates unbounded pods
+  #   - A bug in an autoscaler that continuously requests more capacity
+  #
+  # SIZING GUIDANCE:
+  # Set limits based on your expected peak capacity plus a buffer:
+  #   - 100 CPU = ~25 D4s_v5 nodes or ~12 D8s_v5 nodes
+  #   - 400Gi memory = matches the CPU allocation for D-series VMs
+  #
+  # COST IMPLICATION:
+  # At D4s_v5 on-demand pricing (~$0.19/hr), 100 CPUs costs ~$475/hr or
+  # ~$11,400/day. Set these limits to match your budget and capacity plan.
+  #
+  # REGULATORY NOTE (DORA Article 11):
+  # Document these limits in your capacity plan. Auditors want to see
+  # that you have defined upper bounds to prevent uncontrolled cost growth.
+  # ---------------------------------------------------------------------------
+  limits:
+    cpu: "100"
+    memory: 400Gi
+
+  # ---------------------------------------------------------------------------
+  # DISRUPTION POLICY
+  # ---------------------------------------------------------------------------
+  # Controls how Karpenter consolidates, replaces, and terminates nodes.
+  # This is the most important section for balancing cost vs. availability.
+  #
+  # DISRUPTION TYPES:
+  #   Consolidation: Replace underutilized nodes with smaller ones
+  #   Drift:         Replace nodes that no longer match the NodePool spec
+  #   Expiration:    Replace nodes that exceed their TTL (forced rotation)
+  #   Emptiness:     Remove nodes with no pods scheduled
+  # ---------------------------------------------------------------------------
+  disruption:
+    # -------------------------------------------------------------------------
+    # CONSOLIDATION POLICY
+    # -------------------------------------------------------------------------
+    # WhenEmptyOrUnderutilized: Karpenter will consolidate nodes that are
+    # either empty (no pods) or underutilized (pods can fit on other nodes).
+    #
+    # ALTERNATIVES:
+    #   WhenEmpty:                Only remove completely empty nodes
+    #   WhenEmptyOrUnderutilized: Remove empty + consolidate underutilized
+    #
+    # WHY WhenEmptyOrUnderutilized FOR REGULATED:
+    # Pure WhenEmpty is too conservative -- nodes with a single small pod
+    # will never be consolidated, wasting capacity. Underutilized
+    # consolidation actively reduces cost while respecting PDBs and
+    # disruption budgets.
+    #
+    # SAFETY:
+    # Karpenter respects PodDisruptionBudgets during consolidation. If a
+    # PDB prevents pod eviction, the consolidation is deferred.
+    # -------------------------------------------------------------------------
+    consolidationPolicy: WhenEmptyOrUnderutilized
+
+    # -------------------------------------------------------------------------
+    # CONSOLIDATE AFTER
+    # -------------------------------------------------------------------------
+    # How long a node must be underutilized before Karpenter consolidates it.
+    # This prevents flapping -- a node temporarily underutilized during a
+    # rolling update should not be immediately consolidated.
+    #
+    # WHY 30 MINUTES?
+    # Most rolling updates, scaling events, and transient load changes
+    # resolve within 30 minutes. A shorter duration risks consolidating
+    # a node only to provision a replacement minutes later.
+    # -------------------------------------------------------------------------
+    consolidateAfter: 30m
+
+    # -------------------------------------------------------------------------
+    # EXPIRE AFTER (NODE TTL)
+    # -------------------------------------------------------------------------
+    # Maximum lifetime of a node before Karpenter replaces it, regardless
+    # of utilization. This forces periodic node rotation.
+    #
+    # WHY ROTATE NODES?
+    #   1. OS security patches: AKS VHD images are updated regularly.
+    #      Rotating nodes picks up the latest image.
+    #   2. Kubelet certificate rotation: While kubelet rotates certs
+    #      automatically, node rotation provides a hard reset.
+    #   3. Kernel memory fragmentation: Long-running nodes can accumulate
+    #      kernel memory fragmentation that degrades performance.
+    #   4. Compliance: Demonstrates that infrastructure is regularly
+    #      refreshed, not running stale configurations.
+    #
+    # 720h = 30 DAYS:
+    # A 30-day rotation cycle aligns with monthly patch cycles. Nodes are
+    # replaced gradually (not all at once) due to staggered creation times.
+    #
+    # REGULATORY ALIGNMENT (NCUA):
+    # Patch management policies typically require monthly patching. Node
+    # rotation is an automated implementation of this requirement.
+    # -------------------------------------------------------------------------
+    expireAfter: 720h
+
+    # -------------------------------------------------------------------------
+    # DISRUPTION BUDGETS
+    # -------------------------------------------------------------------------
+    # Budgets limit how many nodes Karpenter can disrupt simultaneously.
+    # This prevents mass disruption during consolidation or node rotation.
+    #
+    # BUDGET TYPES:
+    #   nodes:   absolute number of nodes (e.g., "5")
+    #   percent: percentage of total nodes (e.g., "10%")
+    #
+    # MULTIPLE BUDGETS:
+    # You can define multiple budgets with schedules. The most restrictive
+    # matching budget applies at any given time.
+    #
+    # WHY 10%?
+    # With 10 nodes, at most 1 is disrupted at a time. With 50 nodes,
+    # at most 5. This keeps the blast radius small enough that
+    # PodDisruptionBudgets can redistribute pods across remaining nodes.
+    #
+    # SCHEDULE:
+    # The schedule uses cron syntax (UTC). The example below allows
+    # unrestricted consolidation on weekends and limits disruption to 10%
+    # during business hours.
+    # -------------------------------------------------------------------------
+    budgets:
+      # Default budget: max 10% of nodes disrupted at any time
+      - nodes: "10%"
+
+      # Business hours budget: no voluntary disruption during peak hours
+      # Cron schedule: Monday-Friday, 08:00-18:00 UTC
+      # During these hours, only 0 nodes can be voluntarily disrupted.
+      # This prevents consolidation or rotation from impacting workloads
+      # during business hours. Spot interruptions and hardware failures
+      # (involuntary disruptions) are not affected by budgets.
+      - nodes: "0"
+        schedule: "0 8 * * 1-5"
+        duration: 10h
+
+---
+
+# =============================================================================
+# AKS NODE CLASS - REGULATED NODES
+# =============================================================================
+#
+# WHAT IS AN AKSNODECLASS?
+# AKSNodeClass is the Azure-specific counterpart to Karpenter's NodePool.
+# While NodePool defines scheduling constraints (what kind of node),
+# AKSNodeClass defines cloud provider settings (how to configure the node).
+#
+# PROVIDER-SPECIFIC NODE CLASSES:
+#   - AKS:  AKSNodeClass (karpenter.azure.com)
+#   - EKS:  EC2NodeClass (karpenter.k8s.aws)
+#   - GKE:  GCENodeClass (future, if Karpenter adds GKE support)
+#
+# THIS IS THE ONLY NON-PORTABLE RESOURCE:
+# When migrating between cloud providers, NodePool resources remain the same.
+# Only the NodeClass resource changes. This separation is a key Karpenter
+# design principle for multi-cloud portability.
+# =============================================================================
+
+apiVersion: karpenter.azure.com/v1alpha2
+kind: AKSNodeClass
+metadata:
+  name: regulated-nodes
+  labels:
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: regulated-platform
+    compliance.regulated/pci-dss: "req-2.2"
+spec:
+  # ---------------------------------------------------------------------------
+  # OS IMAGE
+  # ---------------------------------------------------------------------------
+  # The operating system image for provisioned nodes.
+  #
+  # AKS VHD (Virtual Hard Disk):
+  # AKS maintains curated OS images that include:
+  #   - Ubuntu 22.04 or Azure Linux (CBL-Mariner)
+  #   - Pre-installed kubelet, containerd, and system tools
+  #   - CIS benchmark hardening
+  #   - Monthly security updates baked into the image
+  #
+  # AzureLinux vs Ubuntu:
+  #   AzureLinux: Smaller image, faster boot, fewer packages (less attack surface)
+  #   Ubuntu:     Wider compatibility, more familiar, larger package repository
+  #
+  # REGULATORY NOTE (CIS Benchmark):
+  # AKS VHD images are hardened per CIS benchmarks. Using the AKS-managed
+  # image ensures baseline compliance without manual hardening steps.
+  # ---------------------------------------------------------------------------
+  imageFamily: AzureLinux
+
+  # ---------------------------------------------------------------------------
+  # OS DISK CONFIGURATION
+  # ---------------------------------------------------------------------------
+  # The root disk for provisioned nodes.
+  #
+  # SIZE: 128 GiB
+  # Default AKS node disk is 128 GiB. This provides space for:
+  #   - Container images (typically 20-50 GiB for a busy node)
+  #   - Container logs (before rotation/shipping)
+  #   - Kubelet working space
+  #   - OS packages and temp files
+  #
+  # DISK TYPE: Managed (Premium SSD)
+  # Managed disks provide:
+  #   - Automatic replication within the datacenter
+  #   - SLA-backed IOPS and throughput
+  #   - Encryption at rest (Azure Storage Service Encryption)
+  #
+  # EPHEMERAL OS DISKS:
+  # For better performance and lower cost, consider ephemeral OS disks.
+  # These use the VM's local temp disk for the OS, providing:
+  #   - Faster boot times (no network disk attach)
+  #   - Lower latency (local NVMe/SSD)
+  #   - No additional disk cost
+  # Trade-off: Data is lost on VM deallocation (acceptable for stateless nodes).
+  # ---------------------------------------------------------------------------
+  osDiskSizeGB: 128
+
+  # ---------------------------------------------------------------------------
+  # TAGS
+  # ---------------------------------------------------------------------------
+  # Azure resource tags applied to all VMs and associated resources (NICs,
+  # disks) provisioned by this AKSNodeClass.
+  #
+  # WHY TAGS MATTER:
+  #   1. Cost allocation: Azure Cost Management uses tags to attribute costs
+  #      to teams, projects, and environments.
+  #   2. Governance: Azure Policy can enforce tagging requirements.
+  #   3. Automation: Cleanup scripts use tags to identify resources.
+  #   4. Audit: Tags provide metadata for compliance reporting.
+  #
+  # REQUIRED TAGS (per organizational policy):
+  # Adjust these tags to match your organization's tagging taxonomy.
+  # ---------------------------------------------------------------------------
+  tags:
+    environment: production
+    managed-by: karpenter
+    workload-tier: regulated
+    cost-center: platform-infrastructure
+    compliance-scope: pci-dss
+
+  # ---------------------------------------------------------------------------
+  # KUBELET CONFIGURATION
+  # ---------------------------------------------------------------------------
+  # Customize kubelet settings on provisioned nodes. These settings affect
+  # how kubelet manages pods, resources, and garbage collection.
+  #
+  # WHY CUSTOMIZE KUBELET?
+  # Default kubelet settings are conservative. For regulated environments,
+  # you may want to:
+  #   - Reserve more resources for system components
+  #   - Configure stricter eviction thresholds
+  #   - Limit pod density per node
+  # ---------------------------------------------------------------------------
+  kubelet:
+    # -------------------------------------------------------------------------
+    # MAX PODS
+    # -------------------------------------------------------------------------
+    # Maximum number of pods per node. Azure CNI default is 30 per node.
+    #
+    # SIZING FACTORS:
+    #   - Azure CNI allocates one IP per pod from the subnet
+    #   - More pods = more IPs consumed from the subnet CIDR
+    #   - Each pod consumes memory for kubelet tracking (~1-2 MiB)
+    #
+    # WHY 50?
+    # 50 pods per node is a reasonable balance for D-series VMs with
+    # 4-16 vCPUs. Fewer pods per node means more nodes (higher cost but
+    # better isolation). More pods per node means fewer nodes (lower cost
+    # but larger blast radius).
+    #
+    # SUBNET PLANNING:
+    # With 50 pods/node and 25 nodes, you need ~1,250 IPs. Ensure your
+    # subnet CIDR is large enough (at least /21 for headroom).
+    # -------------------------------------------------------------------------
+    maxPods: 50
+
+    # -------------------------------------------------------------------------
+    # SYSTEM RESERVED RESOURCES
+    # -------------------------------------------------------------------------
+    # Resources reserved for system daemons (kubelet, containerd, OS services).
+    # These resources are NOT available for pod scheduling.
+    #
+    # WHY RESERVE?
+    # Without reservation, pods can consume all node resources, starving
+    # kubelet and containerd. This can make the node unresponsive (NotReady),
+    # triggering pod eviction and potential cascade failures.
+    #
+    # SIZING:
+    # AKS default: 100m CPU, 1750Mi memory (scaled by VM size).
+    # We use slightly higher values to provide a safety margin.
+    # -------------------------------------------------------------------------
+    systemReserved:
+      cpu: 100m
+      memory: 256Mi
