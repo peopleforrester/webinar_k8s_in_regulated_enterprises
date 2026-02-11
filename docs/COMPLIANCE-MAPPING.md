@@ -47,6 +47,57 @@ financial services environments.
 | Low Vulnerabilities | Tracked and reviewed quarterly | 90 days |
 | SBOM Generation | DORA Article 28 - Supply Chain Transparency | Per release |
 
+## Istio (Service Mesh) → Regulatory Requirements
+
+| Istio Feature | NCUA | OSFI B-13 | DORA |
+|--------------|------|-----------|------|
+| Mutual TLS (mTLS) | Data Encryption in Transit | Section 4.3 - Cryptographic Controls | Article 9(4)(b) - Encryption Policies |
+| AuthorizationPolicy | Access Control - Least Privilege | Section 4.3.2 - Service Identity | Article 9(4)(c) - Access Control |
+| PeerAuthentication | Identity Verification | Section 4.4 - Authentication | Article 9(2) - Protection and Prevention |
+| Traffic Management | Operational Resilience | Section 6.1 - Continuity Planning | Article 11 - Business Continuity |
+
+## ArgoCD (GitOps) → Regulatory Requirements
+
+| ArgoCD Feature | NCUA | OSFI B-13 | DORA |
+|---------------|------|-----------|------|
+| Git-based Deployments | Change Management Audit Trail | Section 5.2 - Configuration Management | Article 9(4)(e) - Change Management |
+| Application Sync | Continuous Compliance Verification | Section 4.5 - Continuous Monitoring | Article 10 - Detection |
+| RBAC (Projects) | Separation of Duties | Section 4.3 - Access Controls | Article 9(4)(c) - Access Control |
+| Audit Logging | Incident Investigation | Section 5.3 - Logging and Monitoring | Article 17 - ICT Incident Reporting |
+
+## External Secrets → Regulatory Requirements
+
+| ESO Feature | NCUA | OSFI B-13 | DORA |
+|------------|------|-----------|------|
+| Key Vault Sync | Secrets Management - Centralized | Section 4.3 - Cryptographic Key Management | Article 9(4)(b) - Encryption |
+| Secret Rotation | Credential Lifecycle Management | Section 4.3.3 - Key Rotation | Article 9(4)(d) - Security Updates |
+| ClusterSecretStore | Audit Trail for Secret Access | Section 5.3 - Access Logging | Article 17 - Incident Reporting |
+
+## Crossplane → Regulatory Requirements
+
+| Crossplane Feature | NCUA | OSFI B-13 | DORA |
+|-------------------|------|-----------|------|
+| Declarative Infra | Infrastructure Audit Trail | Section 5.2 - Configuration Management | Article 9(4)(e) - Change Management |
+| Drift Detection | Configuration Compliance | Section 4.5 - Continuous Monitoring | Article 10 - Detection |
+| RBAC on Resources | Infrastructure Access Control | Section 4.3 - Access Controls | Article 9(4)(c) - Access Control |
+
+## Harbor → Regulatory Requirements
+
+| Harbor Feature | NCUA | OSFI B-13 | DORA |
+|---------------|------|-----------|------|
+| Image Scanning | Supply Chain Vulnerability Mgmt | Section 5.1 - Vulnerability Management | Article 9(4)(d) - Security Updates |
+| Content Trust (Notary) | Image Integrity Verification | OSFI B-10 Section 4.1 - Third Party Risk | Article 28 - Supply Chain |
+| RBAC / Projects | Registry Access Control | Section 4.3 - Access Controls | Article 9(4)(c) - Access Control |
+| Audit Logs | Image Pull/Push Audit Trail | Section 5.3 - Logging | Article 17 - ICT Incident Reporting |
+
+## Karpenter → Regulatory Requirements
+
+| Karpenter Feature | NCUA | OSFI B-13 | DORA |
+|------------------|------|-----------|------|
+| Node Autoscaling | Capacity Management | Section 6.1 - Capacity Planning | Article 11 - Capacity and Performance |
+| Spot Instance Mgmt | Cost Optimization | Section 6.2 - Financial Controls | Article 12 - Proportionality |
+| Consolidation | Resource Efficiency | Section 6.1 - Operational Efficiency | Article 11 - Performance Management |
+
 ## Regulatory Framework Reference
 
 ### NCUA (National Credit Union Administration)

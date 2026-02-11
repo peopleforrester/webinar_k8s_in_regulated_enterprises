@@ -20,19 +20,35 @@
 │  │  │  │              AKS Cluster                         │  │  │  │
 │  │  │  │                                                  │  │  │  │
 │  │  │  │  ┌──────────┐  ┌───────────┐  ┌──────────────┐ │  │  │  │
-│  │  │  │  │  System   │  │   User    │  │   Security   │ │  │  │  │
+│  │  │  │  │  System   │  │   User    │  │   Tool       │ │  │  │  │
 │  │  │  │  │ Node Pool │  │ Node Pool │  │  Namespaces  │ │  │  │  │
 │  │  │  │  │           │  │           │  │              │ │  │  │  │
-│  │  │  │  │ - CoreDNS │  │ - Demo    │  │ - falco      │ │  │  │  │
-│  │  │  │  │ - Metrics │  │   Apps    │  │ - kyverno    │ │  │  │  │
-│  │  │  │  │ - Policy  │  │           │  │ - trivy      │ │  │  │  │
-│  │  │  │  │           │  │           │  │ - kubescape  │ │  │  │  │
+│  │  │  │  │ - CoreDNS │  │ - Demo    │  │ T1: falco    │ │  │  │  │
+│  │  │  │  │ - Metrics │  │   Apps    │  │     kyverno  │ │  │  │  │
+│  │  │  │  │ - Policy  │  │           │  │     trivy    │ │  │  │  │
+│  │  │  │  │           │  │           │  │     kubescape│ │  │  │  │
+│  │  │  │  │           │  │           │  │ T2: monitor  │ │  │  │  │
+│  │  │  │  │           │  │           │  │     argocd   │ │  │  │  │
+│  │  │  │  │           │  │           │  │ T3: istio    │ │  │  │  │
+│  │  │  │  │           │  │           │  │     harbor   │ │  │  │  │
+│  │  │  │  │           │  │           │  │     crosspl  │ │  │  │  │
 │  │  │  │  └──────────┘  └───────────┘  └──────────────┘ │  │  │  │
 │  │  │  └──────────────────────────────────────────────────┘  │  │  │
 │  │  └────────────────────────────────────────────────────────┘  │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+## Tiered Architecture
+
+| Tier | Purpose | Tools | Namespace(s) |
+|------|---------|-------|--------------|
+| 1 | Security Core | Falco, Falcosidekick, Falco Talon, Kyverno, Trivy, Kubescape | falco, kyverno, trivy-system, kubescape |
+| 2 | Observability & Delivery | Prometheus Stack (+ Grafana), ArgoCD, External Secrets | monitoring, argocd, external-secrets |
+| 3 | Platform Services | Istio, Crossplane, Harbor | istio-system, crossplane-system, harbor |
+| 4 | AKS-Managed | Karpenter (Node Autoprovisioning) | kube-system |
+
+See [INSTALL-ORDER.md](INSTALL-ORDER.md) for the dependency graph and install sequence.
 
 ## Security Tools Data Flow
 
@@ -59,6 +75,32 @@
 │ Output: VulnReps  │    │ Output: Compliance  │
 │ + SBOM CRDs       │    │ scores + reports    │
 └─────────────────┘    └─────────────────────┘
+```
+
+## Platform Tools Data Flow
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐
+│   Prometheus      │    │     ArgoCD       │    │  External Secrets    │
+│                   │    │                   │    │                      │
+│ Scrapes metrics   │    │ Watches Git for   │    │ Syncs secrets from   │
+│ from all tools    │    │ manifest changes, │    │ Azure Key Vault      │
+│ via ServiceMonitor│    │ syncs to cluster  │    │ into K8s Secrets     │
+│                   │    │                   │    │                      │
+│ Output: Grafana   │    │ Output: Automated │    │ Output: Native K8s   │
+│ dashboards + alerts│   │ deployments       │    │ Secret objects       │
+└─────────────────┘    └─────────────────┘    └─────────────────────┘
+
+┌─────────────────┐    ┌─────────────────────┐  ┌─────────────────────┐
+│     Istio         │    │    Crossplane        │  │     Harbor           │
+│                   │    │                      │  │                      │
+│ Service mesh with │    │ Provisions Azure     │  │ Container registry   │
+│ mTLS, AuthZ       │    │ resources from K8s   │  │ with vulnerability   │
+│ policies, traffic │    │ manifests            │  │ scanning and RBAC    │
+│ management        │    │                      │  │                      │
+│ Output: Encrypted │    │ Output: Managed      │  │ Output: Signed,      │
+│ service-to-service│    │ infrastructure       │  │ scanned images       │
+└─────────────────┘    └─────────────────────┘  └─────────────────────┘
 ```
 
 ## Network Architecture

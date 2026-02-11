@@ -136,6 +136,128 @@ kubescape scan framework nsa --verbose
 kubectl auth can-i list pods --as system:serviceaccount:kubescape:kubescape-scanner -A
 ```
 
+## Tier 2 Tool Issues
+
+### Prometheus Stack pods not starting
+
+```bash
+# Check all components
+kubectl get pods -n monitoring
+
+# Prometheus PVC issues (check StorageClass)
+kubectl get pvc -n monitoring
+kubectl describe pvc -n monitoring prometheus-prometheus-kube-prometheus-prometheus-0
+
+# Grafana not loading dashboards
+kubectl logs -n monitoring -l app.kubernetes.io/name=grafana --tail=50
+```
+
+### ArgoCD sync failures
+
+```bash
+# Check ArgoCD application status
+kubectl get applications -n argocd
+
+# View sync details
+kubectl describe application -n argocd APP_NAME
+
+# Check server logs
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server --tail=50
+
+# Get admin password
+kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+```
+
+### External Secrets Operator not syncing
+
+```bash
+# Check ClusterSecretStore status
+kubectl get clustersecretstores
+kubectl describe clustersecretstore azure-keyvault
+
+# Check ExternalSecret status
+kubectl get externalsecrets -A
+
+# Verify workload identity
+kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=50
+```
+
+## Tier 3 Tool Issues
+
+### Istio istiod not starting
+
+```bash
+# Verify Istio CRDs installed (base chart)
+kubectl get crds | grep istio
+
+# Check istiod logs
+kubectl logs -n istio-system -l app=istiod --tail=50
+
+# Verify sidecar injection
+kubectl get namespace -L istio-injection
+```
+
+### Istio sidecar not injecting
+
+```bash
+# Label the namespace for injection
+kubectl label namespace TARGET_NS istio-injection=enabled
+
+# Restart pods to trigger injection
+kubectl rollout restart deployment -n TARGET_NS
+
+# Verify sidecars
+kubectl get pods -n TARGET_NS -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{" "}{end}{"\n"}{end}'
+```
+
+### Crossplane provider not healthy
+
+```bash
+# Check provider status
+kubectl get providers
+
+# Check provider pod
+kubectl get pods -n crossplane-system
+
+# View provider logs
+kubectl logs -n crossplane-system -l pkg.crossplane.io/revision
+
+# Verify ProviderConfig
+kubectl get providerconfig
+```
+
+### Harbor pods not ready (allow 10+ minutes)
+
+```bash
+# Harbor has 7+ components — check all
+kubectl get pods -n harbor
+
+# Common issue: PVC not binding
+kubectl get pvc -n harbor
+
+# Verify StorageClass exists
+kubectl get sc managed-csi-premium
+
+# Check Harbor core logs
+kubectl logs -n harbor -l component=core --tail=50
+```
+
+## Tier 4 Tool Issues
+
+### Karpenter (NAP) not provisioning nodes
+
+```bash
+# Verify NAP is enabled
+az aks show -g RG_NAME -n CLUSTER_NAME --query nodeProvisioningProfile
+
+# Check NodePool and AKSNodeClass CRDs
+kubectl get nodepools
+kubectl get aksnodeclasses
+
+# View Karpenter controller logs
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter --tail=50
+```
+
 ## Demo Workload Issues
 
 ### Vulnerable app fails to deploy (before policies)
@@ -212,6 +334,17 @@ kubectl scale deployment -n kyverno kyverno-admission-controller --replicas=1
 kubectl scale deployment -n kyverno kyverno-background-controller --replicas=1
 ```
 
+## Test Suite
+
+Run the built-in test framework to diagnose issues:
+
+```bash
+make test              # Unit tests (no cluster needed)
+make test-integration  # Check all tool pods and endpoints
+make test-e2e          # Full scenario validation
+make test-all          # Everything
+```
+
 ## Getting Help
 
 - Falco: https://falco.org/docs/
@@ -219,4 +352,11 @@ kubectl scale deployment -n kyverno kyverno-background-controller --replicas=1
 - Trivy: https://aquasecurity.github.io/trivy/
 - Kubescape: https://kubescape.io/docs/
 - KubeHound: https://kubehound.io/
+- Prometheus: https://prometheus.io/docs/
+- ArgoCD: https://argo-cd.readthedocs.io/
+- Istio: https://istio.io/latest/docs/
+- Crossplane: https://docs.crossplane.io/
+- Harbor: https://goharbor.io/docs/
+- External Secrets: https://external-secrets.io/
+- Karpenter: https://karpenter.sh/docs/
 - AKS: https://learn.microsoft.com/en-us/azure/aks/

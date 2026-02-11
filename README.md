@@ -2,7 +2,9 @@
 
 > Companion repository for the KodeKloud webinar **"AKS for Regulated Enterprise in the Age of AI"**
 
-A take-home reference with runnable Helm values, Kubernetes manifests, and educational documentation for **15+ CNCF and cloud-native tools** deployed on Azure Kubernetes Service. Every tool directory includes a README explaining what it does, why it matters for regulated industries, and how to install it on an AKS cluster.
+A take-home reference with runnable Helm values, Kubernetes manifests, and educational documentation for **18 CNCF and cloud-native tools** deployed on Azure Kubernetes Service across four tiers (Security, Observability, Platform, AKS-Managed). Every tool directory includes a README explaining what it does, why it matters for regulated industries, and how to install it on an AKS cluster.
+
+See [docs/TOOL-MATRIX.md](docs/TOOL-MATRIX.md) for the full deployment matrix and [docs/INSTALL-ORDER.md](docs/INSTALL-ORDER.md) for the dependency graph.
 
 ## Quick Start
 
@@ -14,8 +16,19 @@ cd webinar_k8s_in_regulated_enterprises
 # 2. Deploy an AKS cluster (~10 min)
 ./scripts/setup-cluster.sh
 
-# 3. Pick a tool and follow its README
-ls tools/
+# 3. Install all tools (Tier 1-4) or pick a tier
+./scripts/install-tools.sh              # All tiers
+./scripts/install-tools.sh --tier=1     # Security tools only
+
+# 4. Run validation
+make test                               # Unit tests (no cluster needed)
+make test-all                           # Full test suite (needs cluster)
+
+# 5. Pick a scenario
+make demo-attack                        # Attack → Detect → Prevent → Prove
+make demo-gitops                        # GitOps delivery pipeline
+make demo-zerotrust                     # Zero-trust networking
+make demo-finops                        # FinOps cost optimization
 ```
 
 See [QUICKSTART.md](QUICKSTART.md) for detailed step-by-step instructions including prerequisites.
@@ -113,22 +126,40 @@ Every tool in this repo maps to one or more CNCF certification exam domains (CKA
 ├── infrastructure/terraform/     # AKS cluster (K8s 1.34, Cilium, AzureLinux)
 ├── tools/                        # One directory per tool (README + values + manifests)
 │   ├── _template/                # Template for adding new tools
-│   ├── kyverno/                  ├── argocd/
-│   ├── falco/                    ├── prometheus/
-│   ├── falcosidekick/            ├── grafana/
-│   ├── falco-talon/              ├── istio/
-│   ├── trivy/                    ├── karpenter/
-│   ├── kubescape/                ├── longhorn/
-│   ├── kubehound/                ├── harbor/
-│   ├── helm/                     ├── crossplane/
-│   ├── kustomize/                └── external-secrets/
-│   └── opa-gatekeeper/
+│   ├── falco/                    # Tier 1 — Security
+│   ├── falcosidekick/            │
+│   ├── falco-talon/              │
+│   ├── kyverno/                  │
+│   ├── trivy/                    │
+│   ├── kubescape/                │
+│   ├── prometheus/               # Tier 2 — Observability
+│   ├── grafana/                  │   (bundled in kube-prometheus-stack)
+│   ├── argocd/                   │
+│   ├── external-secrets/         │
+│   ├── istio/                    # Tier 3 — Platform
+│   ├── crossplane/               │
+│   ├── harbor/                   │
+│   ├── karpenter/                # Tier 4 — AKS-Managed
+│   ├── kubehound/                # Local tools
+│   ├── helm/                     │
+│   ├── kustomize/                │
+│   ├── opa-gatekeeper/           # Docs only (Azure Policy managed)
+│   └── longhorn/                 # Docs only (EKS/GKE use)
 ├── workloads/                    # Example applications
 │   ├── vulnerable-app/           # Intentionally insecure (for policy demos)
 │   └── compliant-app/            # Passes all security policies
 ├── scenarios/                    # Multi-tool walkthroughs
-├── ci-cd/                        # Pipeline templates (Azure DevOps + GitHub Actions)
+│   ├── attack-detect-prevent/    # KubeHound + Falco + Kyverno + Kubescape
+│   ├── gitops-delivery/          # ArgoCD + Kustomize + Trivy
+│   ├── zero-trust/               # Istio + Kyverno + Falco
+│   └── finops/                   # Karpenter + Prometheus + Grafana
+├── tests/                        # Three-tier test framework
+│   ├── unit/                     # YAML, shell, Terraform, Helm validation
+│   ├── integration/              # Pod health, CRD, endpoint checks
+│   └── e2e/                      # Full scenario validation
 ├── scripts/                      # Setup, install, cleanup automation
+│   └── lib/                      # Tiered install libraries
+├── ci-cd/                        # Pipeline templates (Azure DevOps + GitHub Actions)
 └── docs/                         # Compliance mappings, architecture, troubleshooting
 ```
 
@@ -141,12 +172,23 @@ kubectl version    # kubectl
 helm version       # Helm 3.x
 ```
 
+## Testing
+
+```bash
+make test              # Unit tests (no cluster needed)
+make test-integration  # Integration tests (needs running cluster)
+make test-e2e          # E2E tests (needs cluster + tools installed)
+make test-all          # Run all test suites
+make lint              # YAML + shell + Terraform validation
+```
+
 ## Cleanup
 
 ```bash
 ./scripts/cleanup.sh                  # Remove workloads and policies only
 ./scripts/cleanup.sh --reset-demo     # Reset for fresh demo run
 ./scripts/cleanup.sh --full --destroy # Full teardown including Azure infra
+make clean                            # Alias for --full cleanup
 ```
 
 ## Contributing

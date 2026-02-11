@@ -10,11 +10,13 @@ Deploy an AKS lab cluster, then pick any tool from the [Tool Catalog](README.md#
 - Helm >= 3.14
 - Docker (optional, for KubeHound)
 
-## Two Paths
+## Three Paths
 
 **Path A — Pick a tool:** Deploy the AKS cluster (Step 1), then `cd tools/<tool-name>` and follow that tool's README.
 
-**Path B — Run the security scenario:** Deploy the cluster (Step 1), install the security tools (Step 2), deploy workloads (Step 3), and run the Attack → Detect → Prevent → Prove demo (Step 4).
+**Path B — Run the security demo:** Deploy the cluster (Step 1), install Tier 1 security tools (Step 2), deploy workloads (Step 3), and run the Attack → Detect → Prevent → Prove demo (Step 4).
+
+**Path C — Full production stack:** Deploy the cluster (Step 1), install all tiers (Step 2b), then run any of the four scenarios (Step 4).
 
 ---
 
@@ -48,17 +50,38 @@ az aks get-credentials \
 kubectl get nodes
 ```
 
-## Step 2: Install Security Tools (5 minutes)
+## Step 2: Install Tools
+
+### Option A — Security tools only (5 minutes)
 
 ```bash
-./scripts/install-tools.sh
+./scripts/install-tools.sh --tier=1
+# or: make install-tier1
 
 # Verify installations
-kubectl get pods -n falco          # Falco + Talon
+kubectl get pods -n falco          # Falco + Falcosidekick + Talon
 kubectl get pods -n kyverno        # Kyverno controllers
 kubectl get pods -n trivy-system   # Trivy Operator
 kubectl get pods -n kubescape      # Kubescape Operator
 ```
+
+### Option B — Full production stack (15-20 minutes)
+
+```bash
+./scripts/install-tools.sh
+# or: make install
+
+# Verify all tiers
+make test-integration
+```
+
+This installs all four tiers:
+- **Tier 1** (Security): Falco, Falcosidekick, Falco Talon, Kyverno, Trivy, Kubescape
+- **Tier 2** (Observability): Prometheus Stack (with Grafana), ArgoCD, External Secrets
+- **Tier 3** (Platform): Istio, Crossplane, Harbor
+- **Tier 4** (AKS-Managed): Karpenter Node Autoprovisioning
+
+See [docs/INSTALL-ORDER.md](docs/INSTALL-ORDER.md) for the dependency graph.
 
 ## Step 3: Deploy Demo Workloads (2 minutes)
 
@@ -72,41 +95,42 @@ kubectl apply -f workloads/compliant-app/namespace.yaml
 kubectl apply -f workloads/compliant-app/
 ```
 
-## Step 4: Run the Demo
+## Step 4: Run a Scenario
+
+### Scenario 1: Attack, Detect, Prevent, Prove (Tier 1)
 
 ```bash
-# Run the interactive demo script
-./scenarios/attack-detect-prevent/run-demo.sh
+make demo-attack
+# or: ./scenarios/attack-detect-prevent/run-demo.sh
 ```
 
-### Or run individual components:
-
-**Attack Simulation (SEE phase)**
+Individual steps:
 ```bash
 cd scenarios/attack-detect-prevent
-./01-reconnaissance.sh
-./02-credential-theft.sh
-./03-lateral-movement.sh
+./01-reconnaissance.sh        # Attack simulation
+./02-credential-theft.sh      # Falco detects
+./03-lateral-movement.sh      # Kyverno prevents
 ```
 
-**View Falco Alerts (DETECT phase)**
+### Scenario 2: GitOps Delivery Pipeline (Tier 2)
+
 ```bash
-kubectl logs -n falco -l app.kubernetes.io/name=falco -f
+make demo-gitops
+# or: ./scenarios/gitops-delivery/run-demo.sh
 ```
 
-**Test Kyverno Policies (PREVENT phase)**
-```bash
-# Apply policies
-kubectl apply -f tools/kyverno/policies/
+### Scenario 3: Zero-Trust Networking (Tier 3)
 
-# Try to deploy vulnerable app (should be rejected!)
-kubectl apply -f workloads/vulnerable-app/deployment.yaml
-# Error: Privileged containers are not allowed...
+```bash
+make demo-zerotrust
+# or: ./scenarios/zero-trust/run-demo.sh
 ```
 
-**Generate Compliance Report (PROVE phase)**
+### Scenario 4: FinOps Cost Optimization (Tier 4)
+
 ```bash
-./scripts/generate-compliance-report.sh
+make demo-finops
+# or: ./scenarios/finops/run-demo.sh
 ```
 
 ## Step 5: Cleanup
