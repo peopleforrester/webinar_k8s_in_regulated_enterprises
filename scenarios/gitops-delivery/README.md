@@ -5,6 +5,25 @@
 > **Difficulty:** Intermediate
 > **Goal:** Wire together a regulated continuous delivery pipeline where Git is the single source of truth, environment configs are declarative overlays, and vulnerable images are blocked before reaching the cluster.
 
+## Quick Start (Automated Scripts)
+
+Run the full demo with interactive pauses:
+
+```bash
+./scenarios/gitops-delivery/run-demo.sh
+```
+
+Or run individual steps:
+
+| Script | Description |
+|--------|-------------|
+| `01-setup-argocd-app.sh` | Creates AppProject + ArgoCD Application for kustomize overlay |
+| `02-trigger-sync.sh` | Modifies overlay in Git, watches ArgoCD sync the change |
+| `03-vulnerable-image-gate.sh` | Deploys vulnerable image, shows Trivy VulnerabilityReport |
+| `run-demo.sh` | Orchestrates all three steps with narration pauses |
+
+**Prerequisites:** AKS cluster with `install-tools.sh --tier=1,2` (ArgoCD + Trivy required).
+
 ## Overview
 
 A regulated GitOps delivery pipeline enforces one principle: **nothing reaches the cluster
