@@ -4,6 +4,11 @@
 > **Category:** Observability / Visualization
 > **Difficulty:** Beginner
 > **AKS Compatibility:** Supported
+>
+> **Deployment:** Grafana is deployed as a subchart of `kube-prometheus-stack`
+> (Tier 2 install). The `values.yaml` in this directory is for standalone
+> reference. The `dashboards/` directory contains ConfigMaps applied by the
+> install script after Prometheus Stack deployment.
 
 ## What It Does
 
