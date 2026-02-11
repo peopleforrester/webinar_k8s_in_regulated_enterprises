@@ -380,6 +380,40 @@ variable "log_retention_days" {
 # API SERVER ACCESS CONTROL
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# KARPENTER NODE AUTOPROVISIONING
+# -----------------------------------------------------------------------------
+# Controls whether Karpenter (AKS Node Autoprovisioning) should be enabled.
+#
+# NOTE: azurerm ~> 3.85 does not support node_provisioning_profile. The
+# install-tools.sh tier4 script enables Karpenter via Azure CLI:
+#   az aks update -g <rg> -n <cluster> --node-provisioning-mode Auto
+# When upgrading to azurerm >= 4.57, add a node_provisioning_profile block
+# to aks.tf and reference this variable directly.
+#
+# WHAT CHANGES WHEN ENABLED:
+# - AKS deploys the Karpenter controller to kube-system namespace
+# - Cluster-autoscaler is disabled for Karpenter-managed node pools
+# - NodePool and AKSNodeClass CRDs become available
+#
+# PREREQUISITES:
+# - AKS cluster must be running Kubernetes >= 1.29
+# - Requires OIDC issuer enabled (already set in this config)
+#
+# REGULATORY CONTEXT:
+# Karpenter provides better capacity management (DORA Art.11) by selecting
+# optimal VM sizes per workload, reducing waste and improving bin-packing.
+# -----------------------------------------------------------------------------
+variable "enable_karpenter" {
+  description = "Enable AKS Node Autoprovisioning (Karpenter) - used by install-tools.sh tier4"
+  type        = bool
+  default     = true
+}
+
+# =============================================================================
+# API SERVER ACCESS CONTROL
+# =============================================================================
+
 variable "api_server_authorized_ip_ranges" {
   description = "List of IP ranges (CIDR) allowed to access the AKS API server. Leave empty for unrestricted access."
   type        = list(string)

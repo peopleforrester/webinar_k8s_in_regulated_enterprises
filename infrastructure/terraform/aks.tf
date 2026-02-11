@@ -637,6 +637,27 @@ resource "azurerm_kubernetes_cluster" "main" {
   workload_identity_enabled = true
 
   # ===========================================================================
+  # KARPENTER NODE AUTOPROVISIONING
+  # ===========================================================================
+  # Enables AKS Node Autoprovisioning powered by Karpenter.
+  # When enabled, AKS installs the Karpenter controller in kube-system.
+  # NodePool and AKSNodeClass CRDs are then used to define how Karpenter
+  # provisions nodes (see tools/karpenter/manifests/).
+  #
+  # Karpenter selects optimal VM sizes per workload, improving bin-packing
+  # and reducing cost vs. fixed-size VMSS node pools.
+  #
+  # REGULATORY ALIGNMENT:
+  # - DORA Art.11: Improved capacity management through right-sizing
+  # - NCUA: Cost efficiency through intelligent autoscaling
+  # ===========================================================================
+  # NOTE: Node Autoprovisioning (Karpenter) requires azurerm v4.57+
+  # which adds the node_provisioning_profile block. With azurerm ~> 3.85,
+  # enable Karpenter via Azure CLI after cluster creation:
+  #   az aks update -g <rg> -n <cluster> --node-provisioning-mode Auto
+  # The tier4-aks-managed.sh script handles this automatically.
+
+  # ===========================================================================
   # MONITORING - CONTAINER INSIGHTS
   # ===========================================================================
   # The OMS agent deploys a DaemonSet that collects:

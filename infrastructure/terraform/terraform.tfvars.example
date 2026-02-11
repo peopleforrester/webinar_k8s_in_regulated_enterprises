@@ -12,6 +12,7 @@ user_node_count     = 3
 user_node_vm_size   = "Standard_D4s_v3"
 
 enable_defender     = true
+enable_karpenter    = true
 log_retention_days  = 90
 
 tags = {
