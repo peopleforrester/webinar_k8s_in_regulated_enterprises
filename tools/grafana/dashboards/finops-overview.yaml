@@ -1,0 +1,215 @@
+# ABOUTME: Grafana dashboard ConfigMap for FinOps cost visibility and resource optimization.
+# ABOUTME: Auto-loaded by Grafana sidecar when provisioned via kube-prometheus-stack.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-finops-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: kube-prometheus-stack
+data:
+  finops-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Cluster CPU Utilization",
+          "description": "Actual CPU usage vs allocatable capacity",
+          "type": "gauge",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\"}[5m])) / sum(kube_node_status_allocatable{resource=\"cpu\"}) * 100",
+              "legendFormat": "CPU %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 30 },
+                  { "color": "green", "value": 50 },
+                  { "color": "orange", "value": 80 },
+                  { "color": "red", "value": 90 }
+                ]
+              },
+              "unit": "percent",
+              "max": 100
+            }
+          }
+        },
+        {
+          "title": "Cluster Memory Utilization",
+          "description": "Actual memory usage vs allocatable capacity",
+          "type": "gauge",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{container!=\"\",container!=\"POD\"}) / sum(kube_node_status_allocatable{resource=\"memory\"}) * 100",
+              "legendFormat": "Memory %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 30 },
+                  { "color": "green", "value": 50 },
+                  { "color": "orange", "value": 80 },
+                  { "color": "red", "value": 90 }
+                ]
+              },
+              "unit": "percent",
+              "max": 100
+            }
+          }
+        },
+        {
+          "title": "Node Count",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "count(kube_node_info)",
+              "legendFormat": "Nodes"
+            }
+          ]
+        },
+        {
+          "title": "Pod Count",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 16, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Running\"})",
+              "legendFormat": "Running Pods"
+            }
+          ]
+        },
+        {
+          "title": "Pending Pods",
+          "description": "Pods waiting for scheduling (trigger Karpenter scale-up)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 20, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Pending\"}) or vector(0)",
+              "legendFormat": "Pending"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "CPU: Requests vs Actual Usage by Namespace",
+          "description": "Identifies over-provisioned namespaces (waste = requests - actual)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (kube_pod_container_resource_requests{resource=\"cpu\"})",
+              "legendFormat": "{{namespace}} requested"
+            },
+            {
+              "expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\"}[5m]))",
+              "legendFormat": "{{namespace}} actual"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short" }
+          }
+        },
+        {
+          "title": "Memory: Requests vs Actual Usage by Namespace",
+          "description": "Identifies memory waste per namespace",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (kube_pod_container_resource_requests{resource=\"memory\"})",
+              "legendFormat": "{{namespace}} requested"
+            },
+            {
+              "expr": "sum by (namespace) (container_memory_working_set_bytes{container!=\"\",container!=\"POD\"})",
+              "legendFormat": "{{namespace}} actual"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" }
+          }
+        },
+        {
+          "title": "Resource Efficiency Ratio (Actual/Requested)",
+          "description": "Values below 50% indicate significant over-provisioning",
+          "type": "bargauge",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\"}[5m])) / sum by (namespace) (kube_pod_container_resource_requests{resource=\"cpu\"}) * 100",
+              "legendFormat": "{{namespace}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 20 },
+                  { "color": "yellow", "value": 40 },
+                  { "color": "green", "value": 60 }
+                ]
+              },
+              "unit": "percent",
+              "max": 100
+            }
+          }
+        },
+        {
+          "title": "Node Resource Allocation",
+          "description": "Per-node CPU allocation percentage",
+          "type": "bargauge",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "targets": [
+            {
+              "expr": "sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\"}) / on(node) group_left() kube_node_status_allocatable{resource=\"cpu\"} * 100",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              },
+              "unit": "percent",
+              "max": 100
+            }
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["finops", "cost", "optimization", "karpenter"],
+      "templating": { "list": [] },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "FinOps Cost Overview",
+      "uid": "finops-overview"
+    }
