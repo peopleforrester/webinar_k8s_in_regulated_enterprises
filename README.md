@@ -197,7 +197,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a tool to this repository.
 
 ## Webinar
 
-Watch the full webinar: *Link coming soon*
+Watch the full webinar on [KodeKloud YouTube](https://www.youtube.com/@KodeKloud)
 
 ## License
 

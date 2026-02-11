@@ -58,7 +58,7 @@ kubehound/data/
 .session/
 *.tfplan
 
-# Claude Code config
+# Local tool config
 .claude/
 
 # Internal task tracker
